@@ -409,6 +409,22 @@
     </div>
   </dl>
 
+  <div class="callout">
+    <p class="lead">Updated after a hardware validation pass.</p>
+    <p>
+      An earlier version of this page had <strong>touch and microSD on each other's pins</strong>.
+      Measurement corrected it: touch has its own dedicated SPI wiring (<code>25/39/32</code>), and
+      18/19/23 belong to the SD slot. The map below reflects what the board actually does, not the
+      published pinout.
+    </p>
+    <p>
+      That error was load-bearing. The firmware had been talking to the touch controller on the
+      wrong pins, so <strong>touch had never worked once</strong> &mdash; it returned saturated
+      all-ones that the code's own sanity check quietly discarded. It works now, and is calibrated
+      to a worst-case 6.3&nbsp;px.
+    </p>
+  </div>
+
   <section>
     <h2>The pin budget</h2>
     <p class="sec-note">
@@ -425,7 +441,7 @@
     </div>
 
     <div class="pinmap">
-      <div class="pin dead"><span class="num">0</span><span class="role">BOOT button / strapping</span></div>
+      <div class="pin cau"><span class="num">0</span><span class="role">BOOT button &mdash; works</span></div>
       <div class="pin occ"><span class="num">1</span><span class="role">UART0 TX &mdash; serial</span></div>
       <div class="pin occ"><span class="num">2</span><span class="role">TFT_DC</span></div>
       <div class="pin occ"><span class="num">3</span><span class="role">UART0 RX &mdash; serial</span></div>
@@ -438,20 +454,20 @@
       <div class="pin occ"><span class="num">15</span><span class="role">TFT_CS</span></div>
       <div class="pin cau"><span class="num">16</span><span class="role">RGB LED green</span></div>
       <div class="pin cau"><span class="num">17</span><span class="role">RGB LED blue</span></div>
-      <div class="pin occ"><span class="num">18</span><span class="role">VSPI SCK &mdash; touch</span></div>
-      <div class="pin occ"><span class="num">19</span><span class="role">VSPI MISO &mdash; touch</span></div>
+      <div class="pin cau"><span class="num">18</span><span class="role">microSD SCK</span></div>
+      <div class="pin cau"><span class="num">19</span><span class="role">microSD MISO</span></div>
       <div class="pin occ"><span class="num">21</span><span class="role">Backlight PWM (on P3)</span></div>
       <div class="pin free"><span class="num">22</span><span class="role">FREE &mdash; P3 + CN1, I&sup2;C SCL</span></div>
-      <div class="pin occ"><span class="num">23</span><span class="role">VSPI MOSI &mdash; touch</span></div>
-      <div class="pin dead"><span class="num">25</span><span class="role">Not on a connector</span></div>
+      <div class="pin cau"><span class="num">23</span><span class="role">microSD MOSI</span></div>
+      <div class="pin occ"><span class="num">25</span><span class="role">Touch SCK</span></div>
       <div class="pin cau"><span class="num">26</span><span class="role">Speaker amp &rarr; P4</span></div>
       <div class="pin free"><span class="num">27</span><span class="role">FREE &mdash; CN1, I&sup2;C SDA</span></div>
-      <div class="pin dead"><span class="num">32</span><span class="role">Not on a connector</span></div>
+      <div class="pin occ"><span class="num">32</span><span class="role">Touch MOSI</span></div>
       <div class="pin occ"><span class="num">33</span><span class="role">TOUCH_CS</span></div>
-      <div class="pin occ"><span class="num">34</span><span class="role">LDR light sensor</span></div>
+      <div class="pin dead"><span class="num">34</span><span class="role">LDR &mdash; measured ABSENT</span></div>
       <div class="pin free"><span class="num">35</span><span class="role">FREE &mdash; P3, input only</span></div>
       <div class="pin occ"><span class="num">36</span><span class="role">TOUCH_IRQ</span></div>
-      <div class="pin dead"><span class="num">39</span><span class="role">Not on a connector</span></div>
+      <div class="pin occ"><span class="num">39</span><span class="role">Touch MISO</span></div>
     </div>
 
     <div class="callout">
@@ -583,10 +599,10 @@
           <span class="badge bus">I&sup2;C</span>
         </div>
         <p class="dev-why">
-          <em>Also fixes something already flagged.</em> The auto-brightness currently reads a bare
-          LDR whose wiring polarity is an untested guess. The BH1750 reports calibrated lux over
-          I&sup2;C &mdash; no polarity question, no guessing, and a far better curve for dimming at
-          a bedside.
+          <em>Now a replacement, not an upgrade.</em> Testing showed GPIO 34 reads a hard zero
+          under every condition &mdash; there is no working light sensor on this board, and the
+          backlight had been pinned at 12% brightness because of it. The BH1750 reports calibrated
+          lux over I&sup2;C, so auto-brightness becomes possible for the first time.
         </p>
         <div class="dev-meta">
           <span class="price">~$6&ndash;10</span>
@@ -685,10 +701,12 @@
           <span class="badge have">on board</span>
         </div>
         <p class="dev-why">
-          Wired to <code>GPIO 5</code> plus the VSPI bus the touch controller already uses. Buy a
-          card and you get <em>history</em>: log every reading and the display can show a 24-hour
-          trend instead of only this instant. Note the shared bus &mdash; touch and SD must take
-          turns, which is a code concern, not a wiring one.
+          Wired to <code>GPIO 5</code> on the VSPI bus (18/19/23). Buy a card and you get
+          <em>history</em>: log every reading and the display can show a 24-hour trend instead of
+          only this instant. <em>Correction from testing:</em> this bus is <strong>not</strong>
+          shared with touch &mdash; the touch controller has its own pins &mdash; so there is no
+          contention to manage. Better still, a config file on the card would move the WiFi
+          credentials and city list off the compiled-in headers.
         </p>
         <div class="dev-meta">
           <span class="price">~$7&ndash;12 (32&nbsp;GB is plenty)</span>
@@ -768,9 +786,34 @@
             <td>Corroborated, though sources disagree on the amp part (SC8002B vs PAM8002A) &mdash; board revisions differ</td>
           </tr>
           <tr>
-            <td>microSD on GPIO 5 + VSPI; RGB LED on 4/16/17</td>
+            <td>microSD on GPIO 5 + VSPI (18/19/23)</td>
             <td><span class="tag a">ASSUMPTION</span></td>
-            <td>Community-documented and consistent across sources; not probed here</td>
+            <td>Community-documented; the slot responded but no card was inserted to confirm</td>
+          </tr>
+          <tr>
+            <td>Touch on its own pins: SCK 25 / MISO 39 / MOSI 32 / CS 33 / IRQ 36</td>
+            <td><span class="tag v">VERIFIED</span></td>
+            <td>Re-pinning SPI to these turned saturated all-ones into coordinates that track a finger</td>
+          </tr>
+          <tr>
+            <td>BOOT button on GPIO 0 usable at runtime</td>
+            <td><span class="tag v">VERIFIED</span></td>
+            <td>Idle reads 1, pressed reads 0; three clean presses captured</td>
+          </tr>
+          <tr>
+            <td>No working light sensor on GPIO 34</td>
+            <td><span class="tag v">VERIFIED</span></td>
+            <td>Flat 0 at every ADC attenuation &mdash; room light, torch, and covered &mdash; while a floating GPIO 35 control showed normal noise</td>
+          </tr>
+          <tr>
+            <td>I&sup2;C pins 27/22 are electrically free</td>
+            <td><span class="tag v">VERIFIED</span></td>
+            <td>Full bus scan completes without hanging</td>
+          </tr>
+          <tr>
+            <td>RGB LED on GPIO 4/16/17, active-LOW</td>
+            <td><span class="tag a">ASSUMPTION</span></td>
+            <td>Test ran twice but was not observed &mdash; still outstanding</td>
           </tr>
         </tbody>
       </table>
