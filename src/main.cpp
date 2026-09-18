@@ -3,6 +3,7 @@
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
 #include <TFT_eSPI.h>
+#include <SPI.h>   // used directly: the touch bus is re-pinned before ts.begin()
 #include <XPT2046_Touchscreen.h>
 #include <math.h>
 #include <esp_heap_caps.h>
@@ -17,6 +18,14 @@
 // === Pin Definitions ===
 #define TOUCH_CS 33
 #define TOUCH_IRQ 36
+// The XPT2046 has its OWN SPI wiring on this board -- it is NOT on the VSPI default
+// pins (18/19/23) that a bare SPI.begin() would claim. Measured on hardware: talking
+// to it on the defaults clocks against a floating MISO and returns all-ones
+// (x=8191 y=8191 z=4095), which the sanity gate in loop() then silently discarded --
+// so touch appeared merely "unreliable" while in fact never working once.
+#define TOUCH_SCK  25
+#define TOUCH_MISO 39
+#define TOUCH_MOSI 32
 #define LDR_PIN 34  // onboard light-dependent resistor on this CYD board, unused until now
 
 // === Backlight (PWM via LEDC on TFT_BL, see build_flags) ===
@@ -27,7 +36,25 @@ const int BACKLIGHT_MAX_DUTY = 230;   // ~90%, not 255 — CYD's backlight regul
 const int BACKLIGHT_MIN_DUTY = 30;    // dim but still legible in a dark room
 const int BACKLIGHT_NIGHT_CEILING = 110; // cap even if the room is lit, during home-local night hours
 // LDR polarity varies by wiring revision — if brightness moves the wrong way on your board, flip this.
+// === Touch calibration (measured on this unit, rotation 1, 320x240) ===
+// Five-point fit; worst residual 6.3 px, axes aligned (no swap) and neither inverted.
+// Raw span seen: x 466..3437, y 618..3468. Re-run the calibration rig if the panel or
+// the rotation ever changes -- these are specific to THIS board.
+const float TOUCH_AX = 0.089410f, TOUCH_BX = -14.903f;  // screenX = AX*raw + BX
+const float TOUCH_AY = 0.064770f, TOUCH_BY = -13.698f;  // screenY = AY*raw + BY
+
+// === Ambient light sensor: NOT PRESENT on this unit ===
+// GPIO 34 reads a hard 0 at every ADC attenuation (0/2.5/6/11 dB) in room light, under
+// a torch, and covered -- while GPIO 35, left floating as a control, shows normal ADC
+// noise. So the ADC works and GPIO 34 is simply held low: there is no usable LDR here.
+// This mattered more than it looks. With raw stuck at 0 and LDR_HIGHER_MEANS_BRIGHTER
+// true, lightFrac was always 0, so the backlight sat at BACKLIGHT_MIN_DUTY (30/255)
+// forever -- the panel has been running at ~12% brightness for the life of the project.
+// Ambient dimming is therefore disabled; the time-of-day night ceiling still applies.
+// Flip this back to true only if a real sensor is fitted (a BH1750 on CN1 is the plan).
+const bool LDR_PRESENT = false;
 const bool LDR_HIGHER_MEANS_BRIGHTER = true;
+const int  BACKLIGHT_DEFAULT_DUTY = 200;  // used while no light sensor is available
 const unsigned long BRIGHTNESS_UPDATE_INTERVAL = 2000; // 2 sec
 
 // === Heap watchdog tuning ===
@@ -170,8 +197,11 @@ bool showingDiagnostics = false;
 
 // --- Touch gesture tuning (raw XPT2046 units, 0-4095 range) ---
 const unsigned long LONG_PRESS_MS = 700;   // hold this long, without drifting, to toggle pause
-const int LONG_PRESS_MAX_DRIFT = 300;      // max |dx|+|dy| drift still counted as a long-press
-const int SWIPE_MIN_DELTA = 500;           // min horizontal travel to count as a swipe, not a tap
+// Both thresholds are in SCREEN PIXELS now that touch is calibrated -- they used to be
+// raw ADC counts. Converted with the fitted scale (0.0894 px/count on x): the old 300
+// and 500 raw correspond to ~25 px and ~45 px.
+const int LONG_PRESS_MAX_DRIFT = 25;       // max |dx|+|dy| drift still counted as a long-press
+const int SWIPE_MIN_DELTA = 45;            // min horizontal travel to count as a swipe, not a tap
 const unsigned long DOUBLE_TAP_WINDOW_MS = 400; // 2nd tap within this window opens diagnostics
 
 // === Weather code mapping (WMO codes) ===
@@ -194,9 +224,12 @@ const char* wmoToString(int code) {
 
 // === Backlight: LDR ambient reading + home-local night ceiling, smoothed ===
 int computeTargetBacklightDuty() {
-  int raw = analogRead(LDR_PIN);
-  float lightFrac = LDR_HIGHER_MEANS_BRIGHTER ? raw / 4095.0f : 1.0f - (raw / 4095.0f);
-  int duty = BACKLIGHT_MIN_DUTY + (int)(lightFrac * (BACKLIGHT_MAX_DUTY - BACKLIGHT_MIN_DUTY));
+  int duty = BACKLIGHT_DEFAULT_DUTY;
+  if (LDR_PRESENT) {
+    int raw = analogRead(LDR_PIN);
+    float lightFrac = LDR_HIGHER_MEANS_BRIGHTER ? raw / 4095.0f : 1.0f - (raw / 4095.0f);
+    duty = BACKLIGHT_MIN_DUTY + (int)(lightFrac * (BACKLIGHT_MAX_DUTY - BACKLIGHT_MIN_DUTY));
+  }
 
   setTimezone(HOME_TZ);
   struct tm timeinfo;
@@ -788,6 +821,11 @@ void setup() {
   ledcAttachPin(TFT_BL, BACKLIGHT_CHANNEL);
   ledcWrite(BACKLIGHT_CHANNEL, currentBacklightDuty);
 
+  // XPT2046_Touchscreen::begin() calls a bare SPI.begin(), which would claim VSPI's
+  // DEFAULT pins -- where the touch chip is not wired. ESP32's SPIClass::begin() returns
+  // early when the bus is already initialised, so re-pinning the global SPI object to
+  // the touch controller's real pins FIRST makes the library adopt them.
+  SPI.begin(TOUCH_SCK, TOUCH_MISO, TOUCH_MOSI, TOUCH_CS);
   ts.begin();
   ts.setRotation(1);
 
@@ -862,10 +900,12 @@ void loop() {
   if (ts.tirqTouched()) {
     if (ts.touched()) {
       TS_Point p = ts.getPoint();
-      if (p.z > 200 && p.x > 200 && p.y > 200 && p.x < 3900 && p.y < 3900) {
+      // Gate on pressure and a loose raw sanity range, then convert to screen pixels
+      // so every gesture threshold below is expressed in the same units as the UI.
+      if (p.z > 200 && p.x > 100 && p.y > 100 && p.x < 4000 && p.y < 4000) {
         touchNow = true;
-        curX = p.x;
-        curY = p.y;
+        curX = constrain((int)lroundf(TOUCH_AX * p.x + TOUCH_BX), 0, 319);
+        curY = constrain((int)lroundf(TOUCH_AY * p.y + TOUCH_BY), 0, 239);
       }
     }
   }
