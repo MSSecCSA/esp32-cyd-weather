@@ -1,0 +1,805 @@
+<title>CYD Expansion Budget</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans+Condensed:wght@600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+  :root {
+    --ground:      #FBFAF6;
+    --surface:     #FFFFFF;
+    --surface-alt: #F4F2E9;
+    --ink:         #16150F;
+    --ink-soft:    #5C5949;
+    --ink-faint:   #8A8674;
+    --rule:        #E4E0CD;
+    --rule-strong: #CFC9AE;
+    --accent:      #9A6E12;
+    --accent-br:   #C8901A;
+    --accent-wash: #F7EDD4;
+    --free:        #2F7D4F;
+    --free-wash:   #E4F0E6;
+    --occupied:    #9E3A2B;
+    --occupied-wash:#F5E6E2;
+    --caution:     #9C6410;
+    --caution-wash:#F9EDD8;
+    --dead:        #8A8674;
+    --dead-wash:   #EDEBE2;
+
+    --f-display: "IBM Plex Sans Condensed", "Helvetica Neue", Arial, sans-serif;
+    --f-body:    "IBM Plex Sans", "Helvetica Neue", Arial, sans-serif;
+    --f-mono:    "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+    --measure: 68ch;
+    --gutter: clamp(16px, 4vw, 44px);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground:      #14140E;
+      --surface:     #1C1C14;
+      --surface-alt: #232218;
+      --ink:         #F3F0E3;
+      --ink-soft:    #ADA895;
+      --ink-faint:   #7E7A69;
+      --rule:        #32311F;
+      --rule-strong: #4A4834;
+      --accent:      #E8B93F;
+      --accent-br:   #F2CA63;
+      --accent-wash: #2C2718;
+      --free:        #6DC492;
+      --free-wash:   #1B2A20;
+      --occupied:    #E5806B;
+      --occupied-wash:#2E1E1A;
+      --caution:     #E0A23F;
+      --caution-wash:#2C2416;
+      --dead:        #7E7A69;
+      --dead-wash:   #232218;
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground:      #14140E;
+    --surface:     #1C1C14;
+    --surface-alt: #232218;
+    --ink:         #F3F0E3;
+    --ink-soft:    #ADA895;
+    --ink-faint:   #7E7A69;
+    --rule:        #32311F;
+    --rule-strong: #4A4834;
+    --accent:      #E8B93F;
+    --accent-br:   #F2CA63;
+    --accent-wash: #2C2718;
+    --free:        #6DC492;
+    --free-wash:   #1B2A20;
+    --occupied:    #E5806B;
+    --occupied-wash:#2E1E1A;
+    --caution:     #E0A23F;
+    --caution-wash:#2C2416;
+    --dead:        #7E7A69;
+    --dead-wash:   #232218;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--f-body);
+    font-size: 16px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap {
+    max-width: 1080px;
+    margin: 0 auto;
+    padding-inline: var(--gutter);
+    padding-block: clamp(32px, 6vw, 72px) 80px;
+  }
+
+  /* ---------- masthead ---------- */
+  .masthead { border-bottom: 3px solid var(--ink); padding-bottom: 22px; }
+  .eyebrow {
+    font-family: var(--f-mono);
+    font-size: 11.5px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 0 0 14px;
+  }
+  h1 {
+    font-family: var(--f-display);
+    font-weight: 700;
+    font-size: clamp(34px, 7vw, 60px);
+    line-height: 1.02;
+    letter-spacing: -0.015em;
+    margin: 0 0 16px;
+    text-wrap: balance;
+  }
+  .standfirst {
+    font-size: clamp(16.5px, 2vw, 19px);
+    color: var(--ink-soft);
+    max-width: var(--measure);
+    margin: 0;
+  }
+  .standfirst strong { color: var(--ink); font-weight: 600; }
+
+  /* ---------- verdict strip ---------- */
+  .verdict {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+    gap: 1px;
+    background: var(--rule-strong);
+    border: 1px solid var(--rule-strong);
+    margin-top: 34px;
+  }
+  .verdict div { background: var(--surface); padding: 18px 20px; }
+  .verdict dt {
+    font-family: var(--f-mono);
+    font-size: 10.5px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    margin: 0 0 8px;
+  }
+  .verdict dd {
+    margin: 0;
+    font-family: var(--f-display);
+    font-size: 28px;
+    font-weight: 700;
+    line-height: 1.1;
+  }
+  .verdict dd small {
+    display: block;
+    font-family: var(--f-body);
+    font-size: 13px;
+    font-weight: 400;
+    color: var(--ink-soft);
+    line-height: 1.45;
+    margin-top: 6px;
+  }
+
+  /* ---------- sections ---------- */
+  section { margin-top: 64px; }
+  h2 {
+    font-family: var(--f-display);
+    font-weight: 700;
+    font-size: clamp(23px, 3.6vw, 31px);
+    letter-spacing: -0.01em;
+    margin: 0 0 6px;
+    text-wrap: balance;
+  }
+  .sec-note {
+    color: var(--ink-soft);
+    max-width: var(--measure);
+    margin: 0 0 26px;
+  }
+  h3 {
+    font-family: var(--f-display);
+    font-weight: 600;
+    font-size: 18px;
+    letter-spacing: 0.005em;
+    margin: 34px 0 10px;
+  }
+  p { max-width: var(--measure); }
+  a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+  a:focus-visible, .pin:focus-visible {
+    outline: 2px solid var(--accent-br);
+    outline-offset: 2px;
+  }
+  code {
+    font-family: var(--f-mono);
+    font-size: 0.9em;
+    background: var(--surface-alt);
+    padding: 1px 5px;
+    border-radius: 2px;
+  }
+
+  /* ---------- pin map ---------- */
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 18px;
+    margin-bottom: 18px;
+    font-size: 13px;
+    color: var(--ink-soft);
+  }
+  .legend span { display: inline-flex; align-items: center; gap: 7px; }
+  .chip {
+    width: 11px; height: 11px;
+    border-radius: 2px;
+    flex: none;
+  }
+  .c-free { background: var(--free); }
+  .c-occ  { background: var(--occupied); }
+  .c-cau  { background: var(--caution); }
+  .c-dead { background: var(--dead); }
+
+  .pinmap {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(112px, 1fr));
+    gap: 8px;
+  }
+  .pin {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-left-width: 4px;
+    padding: 9px 11px 10px;
+  }
+  .pin .num {
+    font-family: var(--f-mono);
+    font-weight: 600;
+    font-size: 14.5px;
+    font-variant-numeric: tabular-nums;
+    display: block;
+  }
+  .pin .role {
+    font-size: 11.5px;
+    line-height: 1.35;
+    color: var(--ink-soft);
+    display: block;
+    margin-top: 3px;
+  }
+  .pin.free     { border-left-color: var(--free);     background: var(--free-wash); }
+  .pin.free .num{ color: var(--free); }
+  .pin.occ      { border-left-color: var(--occupied); }
+  .pin.cau      { border-left-color: var(--caution);  background: var(--caution-wash); }
+  .pin.dead     { border-left-color: var(--dead);     background: var(--dead-wash); color: var(--ink-faint); }
+  .pin.dead .role { color: var(--ink-faint); }
+
+  /* ---------- callout ---------- */
+  .callout {
+    border-left: 4px solid var(--accent-br);
+    background: var(--accent-wash);
+    padding: 18px 22px;
+    margin: 28px 0;
+  }
+  .callout p { margin: 0; max-width: var(--measure); }
+  .callout p + p { margin-top: 10px; }
+  .callout .lead {
+    font-family: var(--f-display);
+    font-weight: 700;
+    font-size: 17px;
+  }
+
+  /* ---------- device list ---------- */
+  .group-label {
+    font-family: var(--f-mono);
+    font-size: 11px;
+    letter-spacing: 0.13em;
+    text-transform: uppercase;
+    color: var(--accent);
+    border-bottom: 1px solid var(--rule-strong);
+    padding-bottom: 7px;
+    margin: 40px 0 0;
+  }
+  .devs { display: flex; flex-direction: column; }
+  .dev {
+    display: grid;
+    grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr);
+    gap: 6px 30px;
+    padding: 20px 0;
+    border-bottom: 1px solid var(--rule);
+  }
+  .dev-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px; }
+  .dev-name {
+    font-family: var(--f-display);
+    font-weight: 700;
+    font-size: 19px;
+  }
+  .badge {
+    font-family: var(--f-mono);
+    font-size: 10.5px;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    padding: 2px 7px;
+    border: 1px solid var(--rule-strong);
+    color: var(--ink-soft);
+    white-space: nowrap;
+  }
+  .badge.bus  { color: var(--accent); border-color: var(--accent); }
+  .badge.have { color: var(--free);   border-color: var(--free); }
+  .dev-why { margin: 0; font-size: 14.5px; color: var(--ink-soft); grid-column: 1; }
+  .dev-why em { color: var(--ink); font-style: normal; font-weight: 600; }
+  .dev-meta {
+    grid-column: 2;
+    grid-row: 1 / span 2;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    align-items: flex-start;
+    font-size: 13.5px;
+  }
+  .price {
+    font-family: var(--f-mono);
+    font-variant-numeric: tabular-nums;
+    color: var(--ink-faint);
+    font-size: 12.5px;
+  }
+  .buy {
+    font-weight: 600;
+    font-size: 14px;
+  }
+  @media (max-width: 640px) {
+    .dev { grid-template-columns: 1fr; gap: 10px; }
+    .dev-meta { grid-column: 1; grid-row: auto; }
+  }
+
+  /* ---------- tables ---------- */
+  .tablewrap { overflow-x: auto; }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    font-size: 14.5px;
+    min-width: 520px;
+  }
+  th, td {
+    text-align: left;
+    padding: 11px 14px 11px 0;
+    border-bottom: 1px solid var(--rule);
+    vertical-align: top;
+  }
+  th {
+    font-family: var(--f-mono);
+    font-size: 10.5px;
+    letter-spacing: 0.11em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    font-weight: 500;
+    border-bottom-color: var(--rule-strong);
+  }
+  td.mono { font-family: var(--f-mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+  .tag {
+    font-family: var(--f-mono);
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    padding: 2px 6px;
+    white-space: nowrap;
+  }
+  .tag.v { color: var(--free);     background: var(--free-wash); }
+  .tag.a { color: var(--caution);  background: var(--caution-wash); }
+
+  ul.tight { max-width: var(--measure); padding-left: 20px; }
+  ul.tight li { margin-bottom: 9px; }
+
+  footer {
+    margin-top: 70px;
+    padding-top: 22px;
+    border-top: 1px solid var(--rule-strong);
+    font-size: 13px;
+    color: var(--ink-faint);
+    max-width: var(--measure);
+  }
+  footer a { color: var(--ink-soft); }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; transition: none !important; }
+  }
+</style>
+
+<div class="wrap">
+
+  <header class="masthead">
+    <p class="eyebrow">ESP32-2432S028R &middot; expansion study</p>
+    <h1>What else can I plug into the Cheap Yellow Display?</h1>
+    <p class="standfirst">
+      The board looks like it has spare ports. It mostly doesn't &mdash; the display and
+      touch controller have already claimed twelve GPIOs between them. What you actually
+      get is <strong>three free pins</strong>. But two of those three form an I&sup2;C bus,
+      and a bus is not a pin: it's a <strong>socket for dozens of devices at once</strong>.
+    </p>
+  </header>
+
+  <dl class="verdict">
+    <div>
+      <dt>Truly free GPIOs</dt>
+      <dd>3<small>GPIO 22, 27, 35 &mdash; and 35 is input-only</small></dd>
+    </div>
+    <div>
+      <dt>Devices you can add</dt>
+      <dd>~100<small>I&sup2;C is addressable; the practical limit is addresses and wiring, not pins</small></dd>
+    </div>
+    <div>
+      <dt>Already on the board</dt>
+      <dd>3<small>microSD slot, speaker amp, RGB LED &mdash; all unused by the current firmware</small></dd>
+    </div>
+    <div>
+      <dt>Logic level</dt>
+      <dd>3.3<small>volts, no tolerance for 5&nbsp;V parts on the signal pins</small></dd>
+    </div>
+  </dl>
+
+  <section>
+    <h2>The pin budget</h2>
+    <p class="sec-note">
+      Every GPIO on the module, and who owns it in <em>this</em> firmware. Occupancy is read
+      directly from <code>platformio.ini</code> and <code>src/main.cpp</code>, not from a
+      published pinout &mdash; so it reflects what the code actually claims today.
+    </p>
+
+    <div class="legend">
+      <span><i class="chip c-free"></i> Free &amp; broken out to a connector</span>
+      <span><i class="chip c-occ"></i> Claimed by current firmware</span>
+      <span><i class="chip c-cau"></i> On-board hardware, unused by firmware</span>
+      <span><i class="chip c-dead"></i> Unusable or not exposed</span>
+    </div>
+
+    <div class="pinmap">
+      <div class="pin dead"><span class="num">0</span><span class="role">BOOT button / strapping</span></div>
+      <div class="pin occ"><span class="num">1</span><span class="role">UART0 TX &mdash; serial</span></div>
+      <div class="pin occ"><span class="num">2</span><span class="role">TFT_DC</span></div>
+      <div class="pin occ"><span class="num">3</span><span class="role">UART0 RX &mdash; serial</span></div>
+      <div class="pin cau"><span class="num">4</span><span class="role">RGB LED red</span></div>
+      <div class="pin cau"><span class="num">5</span><span class="role">microSD CS</span></div>
+      <div class="pin dead"><span class="num">6&ndash;11</span><span class="role">SPI flash &mdash; never touch</span></div>
+      <div class="pin occ"><span class="num">12</span><span class="role">TFT_MISO</span></div>
+      <div class="pin occ"><span class="num">13</span><span class="role">TFT_MOSI</span></div>
+      <div class="pin occ"><span class="num">14</span><span class="role">TFT_SCLK</span></div>
+      <div class="pin occ"><span class="num">15</span><span class="role">TFT_CS</span></div>
+      <div class="pin cau"><span class="num">16</span><span class="role">RGB LED green</span></div>
+      <div class="pin cau"><span class="num">17</span><span class="role">RGB LED blue</span></div>
+      <div class="pin occ"><span class="num">18</span><span class="role">VSPI SCK &mdash; touch</span></div>
+      <div class="pin occ"><span class="num">19</span><span class="role">VSPI MISO &mdash; touch</span></div>
+      <div class="pin occ"><span class="num">21</span><span class="role">Backlight PWM (on P3)</span></div>
+      <div class="pin free"><span class="num">22</span><span class="role">FREE &mdash; P3 + CN1, I&sup2;C SCL</span></div>
+      <div class="pin occ"><span class="num">23</span><span class="role">VSPI MOSI &mdash; touch</span></div>
+      <div class="pin dead"><span class="num">25</span><span class="role">Not on a connector</span></div>
+      <div class="pin cau"><span class="num">26</span><span class="role">Speaker amp &rarr; P4</span></div>
+      <div class="pin free"><span class="num">27</span><span class="role">FREE &mdash; CN1, I&sup2;C SDA</span></div>
+      <div class="pin dead"><span class="num">32</span><span class="role">Not on a connector</span></div>
+      <div class="pin occ"><span class="num">33</span><span class="role">TOUCH_CS</span></div>
+      <div class="pin occ"><span class="num">34</span><span class="role">LDR light sensor</span></div>
+      <div class="pin free"><span class="num">35</span><span class="role">FREE &mdash; P3, input only</span></div>
+      <div class="pin occ"><span class="num">36</span><span class="role">TOUCH_IRQ</span></div>
+      <div class="pin dead"><span class="num">39</span><span class="role">Not on a connector</span></div>
+    </div>
+
+    <div class="callout">
+      <p class="lead">Three traps that cost people an evening.</p>
+      <p>
+        <strong>GPIO 22 appears on both P3 and CN1 &mdash; it is one pin, not two.</strong>
+        Wiring something to it on each header shorts two devices onto the same line.
+      </p>
+      <p>
+        <strong>GPIO 35 is input-only and has no internal pull-up.</strong> It can read a
+        sensor or a button, but it cannot drive an LED, a relay, or a chip-select, and a
+        button on it needs an external resistor.
+      </p>
+      <p>
+        <strong>GPIO 27 is on ADC2, which is dead while WiFi is running.</strong> Harmless
+        for I&sup2;C, which is digital &mdash; but never <code>analogRead()</code> it. That is the
+        same reason the on-board light sensor sits on GPIO 34 (ADC1).
+      </p>
+    </div>
+  </section>
+
+  <section>
+    <h2>Why two pins is more than it sounds</h2>
+    <p>
+      The CN1 header carries <code>GND</code>, <code>3V3</code>, <code>SDA (27)</code> and
+      <code>SCL (22)</code> &mdash; a complete I&sup2;C bus with power. I&sup2;C devices are
+      <em>addressed</em>, not wired individually, so they chain off the same four wires. Twenty
+      sensors use the same two GPIOs as one. Your ceiling is address collisions and how much
+      3.3&nbsp;V current the on-board regulator will give you, not pin count.
+    </p>
+    <p>
+      That reframes the question. It isn't "which one device do I add" &mdash; it's "what should
+      this weather station know that it currently doesn't."
+    </p>
+    <h3>The physical gotcha: buy the cable first</h3>
+    <p>
+      CN1 and P3 are <strong>1.25&nbsp;mm pitch</strong> connectors (Molex PicoBlade, commonly sold
+      as "JST 1.25"). Almost every sensor you'll buy terminates in 2.54&nbsp;mm headers or a
+      Qwiic/STEMMA&nbsp;QT plug (1.0&nbsp;mm) &mdash; <em>none of which fit</em>. A 4-pin 1.25&nbsp;mm
+      pigtail is the single part that unblocks everything else, and it's the one people forget.
+    </p>
+  </section>
+
+  <section>
+    <h2>What's worth adding</h2>
+    <p class="sec-note">
+      Ordered by what each actually contributes to this project rather than by price. Links are
+      searches rather than specific listings &mdash; individual listings churn constantly, searches
+      don't rot. Prices are typical street prices and move around.
+    </p>
+
+    <p class="group-label">Start here &mdash; the enabling parts</p>
+    <div class="devs">
+
+      <div class="dev">
+        <div class="dev-head">
+          <span class="dev-name">JST 1.25&nbsp;mm 4-pin pigtail</span>
+          <span class="badge">required</span>
+        </div>
+        <p class="dev-why">
+          <em>Nothing else works without this.</em> Get a pre-crimped set with bare or
+          Dupont-terminated tails. Buy a multi-pack &mdash; the connectors are small and
+          unforgiving, and you will mangle one.
+        </p>
+        <div class="dev-meta">
+          <span class="price">~$8&ndash;12 / multipack</span>
+          <a class="buy" href="https://www.amazon.com/s?k=JST+1.25mm+4+pin+connector+pigtail+cable">Search Amazon &rarr;</a>
+        </div>
+      </div>
+
+      <div class="dev">
+        <div class="dev-head">
+          <span class="dev-name">Qwiic / STEMMA QT adapter</span>
+          <span class="badge">optional</span>
+        </div>
+        <p class="dev-why">
+          If you'd rather not solder at all, a 1.25&nbsp;mm-to-Qwiic adapter turns CN1 into a
+          <em>plug-and-play port</em> for Adafruit and SparkFun's whole sensor range. Slightly more
+          expensive per sensor, dramatically less fiddly.
+        </p>
+        <div class="dev-meta">
+          <span class="price">~$5&ndash;10</span>
+          <a class="buy" href="https://www.amazon.com/s?k=Qwiic+STEMMA+QT+to+JST+1.25mm+adapter+cable">Search Amazon &rarr;</a>
+        </div>
+      </div>
+
+    </div>
+
+    <p class="group-label">Sensors that make it a real weather station</p>
+    <div class="devs">
+
+      <div class="dev">
+        <div class="dev-head">
+          <span class="dev-name">BME280</span>
+          <span class="badge bus">I&sup2;C</span>
+        </div>
+        <p class="dev-why">
+          Temperature, humidity and <em>barometric pressure</em>. The strongest single addition:
+          pressure trend is the one genuine forecasting signal you can measure locally, and it
+          lets the display compare indoor readings against the outdoor API numbers it already
+          fetches. Watch for BMP280 look-alikes &mdash; those drop humidity.
+        </p>
+        <div class="dev-meta">
+          <span class="price">~$8&ndash;15</span>
+          <a class="buy" href="https://www.amazon.com/s?k=BME280+I2C+temperature+humidity+pressure+sensor+module">Search Amazon &rarr;</a>
+        </div>
+      </div>
+
+      <div class="dev">
+        <div class="dev-head">
+          <span class="dev-name">DS3231 real-time clock</span>
+          <span class="badge bus">I&sup2;C</span>
+        </div>
+        <p class="dev-why">
+          <em>Fixes a real weakness in the current build.</em> Every clock on screen depends on NTP,
+          so with no WiFi there is no time at all. A battery-backed DS3231 holds accurate time
+          through outages and reboots &mdash; and it's temperature-compensated, so it drifts
+          seconds per year rather than minutes per month.
+        </p>
+        <div class="dev-meta">
+          <span class="price">~$7&ndash;12</span>
+          <a class="buy" href="https://www.amazon.com/s?k=DS3231+RTC+module+I2C+battery">Search Amazon &rarr;</a>
+        </div>
+      </div>
+
+      <div class="dev">
+        <div class="dev-head">
+          <span class="dev-name">BH1750 lux meter</span>
+          <span class="badge bus">I&sup2;C</span>
+        </div>
+        <p class="dev-why">
+          <em>Also fixes something already flagged.</em> The auto-brightness currently reads a bare
+          LDR whose wiring polarity is an untested guess. The BH1750 reports calibrated lux over
+          I&sup2;C &mdash; no polarity question, no guessing, and a far better curve for dimming at
+          a bedside.
+        </p>
+        <div class="dev-meta">
+          <span class="price">~$6&ndash;10</span>
+          <a class="buy" href="https://www.amazon.com/s?k=BH1750+ambient+light+sensor+I2C+module">Search Amazon &rarr;</a>
+        </div>
+      </div>
+
+      <div class="dev">
+        <div class="dev-head">
+          <span class="dev-name">AS3935 lightning detector</span>
+          <span class="badge bus">I&sup2;C</span>
+        </div>
+        <p class="dev-why">
+          The one that makes people stop and look. Detects the RF signature of lightning and
+          estimates distance to the storm front, typically out to ~40&nbsp;km &mdash; genuinely
+          <em>ahead</em> of any API, since it sees the strike before a forecast updates. Fussy about
+          electrical noise; keep it away from the display ribbon.
+        </p>
+        <div class="dev-meta">
+          <span class="price">~$25&ndash;40</span>
+          <a class="buy" href="https://www.amazon.com/s?k=AS3935+lightning+sensor+module+I2C">Search Amazon &rarr;</a>
+        </div>
+      </div>
+
+      <div class="dev">
+        <div class="dev-head">
+          <span class="dev-name">SCD41 CO&sub2; sensor</span>
+          <span class="badge bus">I&sup2;C</span>
+        </div>
+        <p class="dev-why">
+          True NDIR carbon dioxide, not the "equivalent CO&sub2;" that cheap VOC parts estimate.
+          Indoor CO&sub2; is the number that actually tracks <em>stuffiness</em> in a closed room, which
+          is something no weather API can tell you about your own house.
+        </p>
+        <div class="dev-meta">
+          <span class="price">~$45&ndash;65</span>
+          <a class="buy" href="https://www.amazon.com/s?k=SCD41+CO2+sensor+module+I2C">Search Amazon &rarr;</a>
+        </div>
+      </div>
+
+      <div class="dev">
+        <div class="dev-head">
+          <span class="dev-name">LTR390 UV sensor</span>
+          <span class="badge bus">I&sup2;C</span>
+        </div>
+        <p class="dev-why">
+          Measured UV index at your window rather than a regional estimate. Small, cheap, and a
+          natural fit next to the existing sunrise/sunset data the app already pulls.
+        </p>
+        <div class="dev-meta">
+          <span class="price">~$10&ndash;18</span>
+          <a class="buy" href="https://www.amazon.com/s?k=LTR390+UV+sensor+module+I2C">Search Amazon &rarr;</a>
+        </div>
+      </div>
+
+      <div class="dev">
+        <div class="dev-head">
+          <span class="dev-name">PMSA003I particulate sensor</span>
+          <span class="badge bus">I&sup2;C</span>
+        </div>
+        <p class="dev-why">
+          PM2.5 / PM10 air quality. Worth it if wildfire smoke or seasonal air quality is
+          something you track; it's physically the largest part here and needs airflow, so plan
+          where it sits.
+        </p>
+        <div class="dev-meta">
+          <span class="price">~$40&ndash;50</span>
+          <a class="buy" href="https://www.amazon.com/s?k=PMSA003I+PM2.5+air+quality+sensor+I2C">Search Amazon &rarr;</a>
+        </div>
+      </div>
+
+      <div class="dev">
+        <div class="dev-head">
+          <span class="dev-name">MLX90614 IR thermometer</span>
+          <span class="badge bus">I&sup2;C</span>
+        </div>
+        <p class="dev-why">
+          A non-contact thermometer pointed at the sky reads far colder on a clear night than an
+          overcast one &mdash; so it doubles as a <em>cloud-cover detector</em>, and a decent frost
+          predictor. A genuinely clever trick for the money.
+        </p>
+        <div class="dev-meta">
+          <span class="price">~$12&ndash;25</span>
+          <a class="buy" href="https://www.amazon.com/s?k=MLX90614+infrared+temperature+sensor+I2C">Search Amazon &rarr;</a>
+        </div>
+      </div>
+
+    </div>
+
+    <p class="group-label">Already soldered on &mdash; costs you nothing but code</p>
+    <div class="devs">
+
+      <div class="dev">
+        <div class="dev-head">
+          <span class="dev-name">microSD card slot</span>
+          <span class="badge have">on board</span>
+        </div>
+        <p class="dev-why">
+          Wired to <code>GPIO 5</code> plus the VSPI bus the touch controller already uses. Buy a
+          card and you get <em>history</em>: log every reading and the display can show a 24-hour
+          trend instead of only this instant. Note the shared bus &mdash; touch and SD must take
+          turns, which is a code concern, not a wiring one.
+        </p>
+        <div class="dev-meta">
+          <span class="price">~$7&ndash;12 (32&nbsp;GB is plenty)</span>
+          <a class="buy" href="https://www.amazon.com/s?k=SanDisk+32GB+microSD+card">Search Amazon &rarr;</a>
+        </div>
+      </div>
+
+      <div class="dev">
+        <div class="dev-head">
+          <span class="dev-name">Speaker on P4</span>
+          <span class="badge have">on board</span>
+        </div>
+        <p class="dev-why">
+          There's a class-D amplifier on <code>GPIO 26</code> feeding the P4 connector. A small
+          8&nbsp;&#8486; speaker gives you <em>audible</em> severe-weather alerts &mdash; the one thing a
+          silent display genuinely can't do. Keep it small; the board offers no current limiting.
+        </p>
+        <div class="dev-meta">
+          <span class="price">~$8&ndash;14 / pair</span>
+          <a class="buy" href="https://www.amazon.com/s?k=8+ohm+2W+small+speaker+JST+1.25mm">Search Amazon &rarr;</a>
+        </div>
+      </div>
+
+      <div class="dev">
+        <div class="dev-head">
+          <span class="dev-name">RGB status LED</span>
+          <span class="badge have">on board</span>
+        </div>
+        <p class="dev-why">
+          GPIO 4 / 16 / 17, <em>active low</em>. Free ambient signalling with zero hardware: a colour
+          glance for storm warnings, fetch failures, or WiFi loss without lighting the whole panel
+          at 2&nbsp;am.
+        </p>
+        <div class="dev-meta">
+          <span class="price">already paid for</span>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <section>
+    <h2>How solid is any of this?</h2>
+    <p class="sec-note">
+      This project's standing rule is that a fact isn't proven by matching a community pinout.
+      Here's the honest split, so you know what to double-check before spending money.
+    </p>
+    <div class="tablewrap">
+      <table>
+        <thead>
+          <tr><th>Claim</th><th>Status</th><th>How it's known</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>GPIOs 2, 12&ndash;15, 18, 19, 21, 23, 33, 34, 36 are claimed by this firmware</td>
+            <td><span class="tag v">VERIFIED</span></td>
+            <td>Read directly from <code>platformio.ini</code> and <code>src/main.cpp</code> in this repo</td>
+          </tr>
+          <tr>
+            <td>Chip is ESP32-D0WD-V3, 4&nbsp;MB flash, no PSRAM</td>
+            <td><span class="tag v">VERIFIED</span></td>
+            <td><code>esptool flash_id</code> against the connected board, plus boot diagnostics</td>
+          </tr>
+          <tr>
+            <td>ADC2 unusable with WiFi; GPIO 35 input-only; GPIO 6&ndash;11 are flash</td>
+            <td><span class="tag v">VERIFIED</span></td>
+            <td>ESP32 silicon behaviour, independent of this board</td>
+          </tr>
+          <tr>
+            <td>CN1 = GND / 3V3 / SDA&nbsp;27 / SCL&nbsp;22 &nbsp;&middot;&nbsp; P3 = GND / 35 / 22 / 21</td>
+            <td><span class="tag a">ASSUMPTION</span></td>
+            <td>Two independent community sources agree &mdash; but the silkscreen on <em>your</em> board hasn't been read</td>
+          </tr>
+          <tr>
+            <td>P4 speaker on GPIO 26 via a class-D amp</td>
+            <td><span class="tag a">ASSUMPTION</span></td>
+            <td>Corroborated, though sources disagree on the amp part (SC8002B vs PAM8002A) &mdash; board revisions differ</td>
+          </tr>
+          <tr>
+            <td>microSD on GPIO 5 + VSPI; RGB LED on 4/16/17</td>
+            <td><span class="tag a">ASSUMPTION</span></td>
+            <td>Community-documented and consistent across sources; not probed here</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>Settle it for about twelve dollars</h3>
+    <p>
+      Before committing to an expensive sensor, buy the pigtail and one cheap I&sup2;C part &mdash; a
+      BME280 or BH1750 &mdash; and run an I&sup2;C scan on pins 27/22. If it prints an address, every
+      ASSUMPTION row above is confirmed at once, and the rest of this list becomes a shopping
+      decision rather than a gamble.
+    </p>
+    <ul class="tight">
+      <li><strong>Check the silkscreen first.</strong> Read the labels next to the connectors on your actual board and compare against the table above before ordering.</li>
+      <li><strong>Everything must be 3.3&nbsp;V logic.</strong> The ESP32 is not 5&nbsp;V tolerant; a 5&nbsp;V module on SDA/SCL can damage the pin.</li>
+      <li><strong>Mind the power budget.</strong> The 3V3 pin comes off a small on-board regulator that is already feeding the ESP32, the backlight and the panel. Low-current sensors are fine; anything with a heater, a fan, or a motor needs its own supply.</li>
+      <li><strong>Watch for address collisions.</strong> Two devices at the same I&sup2;C address need one of them changed by jumper, or an I&sup2;C multiplexer.</li>
+    </ul>
+  </section>
+
+  <footer>
+    <p>
+      Pin occupancy derived from this repository at the current commit. Connector pinouts
+      corroborated against
+      <a href="https://randomnerdtutorials.com/esp32-cheap-yellow-display-cyd-pinout-esp32-2432s028r/">Random Nerd Tutorials</a>,
+      <a href="https://mischianti.org/esp32-2432s028-cheap-yellow-display-high-resolution-pinout-datasheet-schema-and-specs/">Mischianti</a>
+      and <a href="https://kafkar.com/projects/smart-home/understanding-connectors-and-pinout-cheap-yellow-display-boardcyd-esp32-2432s028r/">Kafkar</a>.
+      Purchase links are search queries, not endorsements of a particular seller.
+    </p>
+  </footer>
+
+</div>
