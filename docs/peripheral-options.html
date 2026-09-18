@@ -464,7 +464,7 @@
       <div class="pin free"><span class="num">27</span><span class="role">FREE &mdash; CN1, I&sup2;C SDA</span></div>
       <div class="pin occ"><span class="num">32</span><span class="role">Touch MOSI</span></div>
       <div class="pin occ"><span class="num">33</span><span class="role">TOUCH_CS</span></div>
-      <div class="pin dead"><span class="num">34</span><span class="role">LDR &mdash; measured ABSENT</span></div>
+      <div class="pin cau"><span class="num">34</span><span class="role">LDR (R21) &mdash; divider defect</span></div>
       <div class="pin free"><span class="num">35</span><span class="role">FREE &mdash; P3, input only</span></div>
       <div class="pin occ"><span class="num">36</span><span class="role">TOUCH_IRQ</span></div>
       <div class="pin occ"><span class="num">39</span><span class="role">Touch MISO</span></div>
@@ -599,10 +599,13 @@
           <span class="badge bus">I&sup2;C</span>
         </div>
         <p class="dev-why">
-          <em>Now a replacement, not an upgrade.</em> Testing showed GPIO 34 reads a hard zero
-          under every condition &mdash; there is no working light sensor on this board, and the
-          backlight had been pinned at 12% brightness because of it. The BH1750 reports calibrated
-          lux over I&sup2;C, so auto-brightness becomes possible for the first time.
+          <em>The practical fix for a known board defect.</em> The on-board LDR (<strong>R21</strong>,
+          part GT36516) is present but useless as shipped: the part fitted has ~20&times; lower
+          impedance than its divider assumes, so GPIO 34 floors to 0 in any normal light
+          (measured here at 142&nbsp;mV &mdash; the documented signature). The backlight had been
+          stuck at 12% because of it. You can solder ~51&nbsp;k&#8486; in parallel with R15 to
+          rescue it, or fit this and sidestep the whole divider &mdash; calibrated lux, no
+          backlight-spill problem if mounted away from the panel.
         </p>
         <div class="dev-meta">
           <span class="price">~$6&ndash;10</span>
@@ -801,9 +804,9 @@
             <td>Idle reads 1, pressed reads 0; three clean presses captured</td>
           </tr>
           <tr>
-            <td>No working light sensor on GPIO 34</td>
+            <td>On-board LDR (R21) is present but reads a flat 0 as shipped</td>
             <td><span class="tag v">VERIFIED</span></td>
-            <td>Flat 0 at every ADC attenuation &mdash; room light, torch, and covered &mdash; while a floating GPIO 35 control showed normal noise</td>
+            <td>Flat 0 at every attenuation, and <code>analogReadMilliVolts</code> = 142&nbsp;mV &mdash; the exact documented signature of this board's under-specified LDR divider. A floating GPIO 35 control showed normal noise, so the ADC is fine</td>
           </tr>
           <tr>
             <td>I&sup2;C pins 27/22 are electrically free</td>

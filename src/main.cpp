@@ -43,17 +43,37 @@ const int BACKLIGHT_NIGHT_CEILING = 110; // cap even if the room is lit, during 
 const float TOUCH_AX = 0.089410f, TOUCH_BX = -14.903f;  // screenX = AX*raw + BX
 const float TOUCH_AY = 0.064770f, TOUCH_BY = -13.698f;  // screenY = AY*raw + BY
 
-// === Ambient light sensor: NOT PRESENT on this unit ===
-// GPIO 34 reads a hard 0 at every ADC attenuation (0/2.5/6/11 dB) in room light, under
-// a torch, and covered -- while GPIO 35, left floating as a control, shows normal ADC
-// noise. So the ADC works and GPIO 34 is simply held low: there is no usable LDR here.
-// This mattered more than it looks. With raw stuck at 0 and LDR_HIGHER_MEANS_BRIGHTER
-// true, lightFrac was always 0, so the backlight sat at BACKLIGHT_MIN_DUTY (30/255)
-// forever -- the panel has been running at ~12% brightness for the life of the project.
-// Ambient dimming is therefore disabled; the time-of-day night ceiling still applies.
-// Flip this back to true only if a real sensor is fitted (a BH1750 on CN1 is the plan).
+// === Ambient light sensor: PRESENT but its divider is mis-specified ===
+// The sensor is R21 on the silkscreen -- an LDR (a photoresistor is a resistor, hence the
+// R designator), part GT36516, wired from GPIO 34 to GROUND, with a pull-up divider to
+// 3V3 formed by R15 and R19 (reported as 1M each, i.e. ~500k in parallel -- single-sourced,
+// unconfirmed).
+//
+// Measured here: analogRead(34) = 0 at every attenuation (0/2.5/6/11 dB) in room light,
+// under a torch, and covered; analogReadMilliVolts(34) = 142 mV at 11 dB. A floating
+// GPIO 35 control showed normal ADC noise, so the ADC itself is fine.
+//
+// That 142 mV is the tell: it matches the documented symptom for this board exactly. The
+// LDR actually fitted has roughly 20x LOWER impedance than the GT36516 the divider was
+// designed for, so the junction never rises out of the ESP32 ADC's bottom dead zone and
+// floors to 0. The sensor responds to light; the divider squashes that response below the
+// ADC's noise floor. Backlight spill from the panel edge onto R21 makes it worse.
+//
+// Consequence for this project: with raw stuck at 0 and the (also wrong, see below)
+// polarity flag, the backlight sat at BACKLIGHT_MIN_DUTY -- 30 of 255, about 12%
+// brightness -- for the entire life of the project.
+//
+// Two ways to get real ambient dimming:
+//   1. Hardware: solder ~51k in parallel with R15, which restores a usable range.
+//   2. I2C: fit a BH1750 on CN1 and ignore R21 entirely. No divider, no backlight-spill
+//      problem if it is mounted away from the panel, and calibrated lux instead of counts.
+// Until one of those happens, ambient dimming stays off and only the night ceiling applies.
 const bool LDR_PRESENT = false;
-const bool LDR_HIGHER_MEANS_BRIGHTER = true;
+
+// R21 is wired GPIO34 -> GND, so a DARK sensor reads HIGHER, not lower. The original
+// `true` here was inverted; corrected now so that re-enabling LDR_PRESENT after the
+// hardware fix behaves correctly rather than backwards.
+const bool LDR_HIGHER_MEANS_BRIGHTER = false;
 const int  BACKLIGHT_DEFAULT_DUTY = 200;  // used while no light sensor is available
 const unsigned long BRIGHTNESS_UPDATE_INTERVAL = 2000; // 2 sec
 
