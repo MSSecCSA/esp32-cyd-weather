@@ -28,6 +28,32 @@
 #define TOUCH_MOSI 32
 #define LDR_PIN 34  // onboard light-dependent resistor on this CYD board, unused until now
 
+// === Screen layout (320x240, rotation 1) ===
+// Every text zone is an explicit rectangle that gets fillRect-cleared before drawing.
+// Relying on an opaque text background (setTextColor(fg,bg)) is NOT enough: it paints
+// only behind the glyphs actually drawn, so a CENTRED string that gets shorter leaves
+// the previous string's tails sticking out on both sides. That is what smeared the city
+// name and description together as the rotation advanced.
+//
+// The bands below are non-overlapping by construction. logLayoutMetrics() measures the
+// real rendered widths at boot and shouts if anything no longer fits, so adding a city
+// with a long name or a wordier description can't silently reintroduce a collision.
+const char *HEADER_TITLE = "WEATHER";   // "WEATHER NOW" rendered ~180px wide in
+                                        // FreeSansBold12pt7b and ran under the clock box
+const int HDR_X = 5,  HDR_Y = 5,  HDR_W = 310, HDR_H = 26;
+const int HDR_TITLE_X   = 12;           // ML_DATUM baseline x for the title
+const int HDR_CLOCK_X   = 140;          // clock box starts here; title must end before it
+const int HDR_CLOCK_W   = 168;
+const int HDR_CLOCK_R   = 300;          // MR_DATUM right edge for the clock string
+
+const int COL_X = 124, COL_W = 191;     // right-hand data column (vertical divider at x=120)
+const int COL_CX = COL_X + COL_W / 2;   // centre used by every TC_DATUM draw in the column
+
+const int TEMP_Y  = 44,  TEMP_H  = 59;  // 44..102  big temperature figure
+const int DESC_Y  = 103, DESC_H  = 26;  // 103..128 condition text
+const int CITY_Y  = 130, CITY_H  = 16;  // 130..145 city name
+const int CTIME_Y = 147, CTIME_H = 16;  // 147..162 city local time (was 140, overlapping)
+
 // === Backlight (PWM via LEDC on TFT_BL, see build_flags) ===
 const int BACKLIGHT_CHANNEL = 0;
 const int BACKLIGHT_FREQ = 5000;      // Hz — must be >=1kHz to avoid visible/flicker-sensor issues
@@ -648,10 +674,10 @@ void drawHomeClock(TFT_eSPI &d, bool eraseFirst) {
   } else {
     strcpy(timeStr, "--:--");
   }
-  if (eraseFirst) d.fillRect(160, 6, 148, 24, TFT_DARKCYAN);
+  if (eraseFirst) d.fillRect(HDR_CLOCK_X, HDR_Y + 1, HDR_CLOCK_W, HDR_H - 2, TFT_DARKCYAN);
   d.setTextColor(TFT_LIGHTGREY);
   d.setTextDatum(MR_DATUM);
-  d.drawString(timeStr, 300, 18, 2);
+  d.drawString(timeStr, HDR_CLOCK_R, HDR_Y + HDR_H / 2, 2);
 }
 
 void drawCityClock(TFT_eSPI &d, bool eraseFirst) {
@@ -663,10 +689,10 @@ void drawCityClock(TFT_eSPI &d, bool eraseFirst) {
   } else {
     strcpy(cityTimeStr, "--:--");
   }
-  if (eraseFirst) d.fillRect(170, 140, 100, 18, TFT_BLACK);
+  if (eraseFirst) d.fillRect(COL_X, CTIME_Y, COL_W, CTIME_H, TFT_BLACK);
   d.setTextColor(TFT_DARKCYAN);
   d.setTextDatum(TC_DATUM);
-  d.drawString(cityTimeStr, 220, 148, 2);
+  d.drawString(cityTimeStr, COL_CX, CTIME_Y, 2);
 }
 
 // === Draw the Weather Now screen (LANDSCAPE 320x240) ===
@@ -676,15 +702,48 @@ void drawCityClock(TFT_eSPI &d, bool eraseFirst) {
 // background so old content can't ghost through when new content is narrower.
 // The one exception is the weather icon, which gets its own small sprite
 // since it's built from many overlapping shapes rather than a solid rect.
+// Measure what the renderer ACTUALLY produces, rather than trusting estimates. Run once
+// at boot: if a new city name or a wordier condition string stops fitting its zone, this
+// says so on the serial log instead of silently overlapping something.
+void logLayoutMetrics() {
+  Serial.println("--- layout metrics (measured, px) ---");
+
+  tft.setFreeFont(&FreeSansBold12pt7b);
+  int titleW = tft.textWidth(HEADER_TITLE);
+  tft.setTextFont(2);   // GFXFF reset, see CLAUDE.md
+  int titleEnd = HDR_TITLE_X + titleW;
+  Serial.printf("  header \"%s\": %d wide, ends x=%d, clock box starts x=%d  %s\n",
+                HEADER_TITLE, titleW, titleEnd, HDR_CLOCK_X,
+                titleEnd < HDR_CLOCK_X ? "OK" : "*** COLLIDES ***");
+
+  int cw = 0; const char *cn = "";
+  for (int i = 0; i < NUM_CITIES; i++) {
+    int w = tft.textWidth(cities[i].name, 2);
+    if (w > cw) { cw = w; cn = cities[i].name; }
+  }
+  Serial.printf("  widest city \"%s\": %d wide, column is %d  %s\n",
+                cn, cw, COL_W, cw <= COL_W ? "OK" : "*** OVERFLOWS ***");
+
+  // The longest condition string the WMO ladder can produce.
+  int dw = tft.textWidth("Thunderstorm", 4);
+  Serial.printf("  longest condition \"Thunderstorm\": %d wide, column is %d  %s\n",
+                dw, COL_W, dw <= COL_W ? "OK" : "*** OVERFLOWS ***");
+
+  int hw = tft.textWidth("07:42 PM  Sep 18", 2);
+  Serial.printf("  header clock sample: %d wide, box is %d  %s\n",
+                hw, HDR_CLOCK_W, hw <= HDR_CLOCK_W ? "OK" : "*** OVERFLOWS ***");
+  Serial.println("  bands: temp 44-102  desc 103-128  city 130-145  ctime 147-162");
+}
+
 void drawWeatherScreen() {
   TFT_eSPI &d = tft;
 
   // --- Title bar --- (anti-aliased free font; see GFXFF note in CLAUDE.md)
-  d.fillRoundRect(5, 5, 310, 26, 4, TFT_DARKCYAN);
+  d.fillRoundRect(HDR_X, HDR_Y, HDR_W, HDR_H, 4, TFT_DARKCYAN);
   d.setTextColor(TFT_WHITE, TFT_DARKCYAN);
   d.setTextDatum(ML_DATUM);
   d.setFreeFont(&FreeSansBold12pt7b);
-  d.drawString("WEATHER NOW", 12, 20);
+  d.drawString(HEADER_TITLE, HDR_TITLE_X, HDR_Y + HDR_H / 2);
   d.setTextFont(2); // back to classic numbered fonts for the rest of the screen
 
   // --- Home time and date (right side of title bar) ---
@@ -710,21 +769,24 @@ void drawWeatherScreen() {
   }
 
   // --- Temperature zone (moved up) --- anti-aliased free font (see GFXFF note in CLAUDE.md)
+  d.fillRect(COL_X, TEMP_Y, COL_W, TEMP_H, TFT_BLACK);
   d.setTextColor(TFT_WHITE, TFT_BLACK);
   d.setTextDatum(TC_DATUM);
   d.setFreeFont(&FreeSansBold24pt7b);
-  d.drawString(weatherTemp, 220, 55);
+  d.drawString(weatherTemp, COL_CX, TEMP_Y + 11);
   d.setTextFont(2); // back to classic numbered fonts for the rest of the screen
 
   // --- Description zone (moved up) --- opaque bg so a shorter string erases the old one.
   // Amber instead of cyan when the reading failed, so an error state is distinguishable
   // at a glance from a real forecast rather than reading like just another condition.
+  d.fillRect(COL_X, DESC_Y, COL_W, DESC_H, TFT_BLACK);
   d.setTextColor(weatherDataValid ? TFT_CYAN : TFT_ORANGE, TFT_BLACK);
-  d.drawString(weatherDesc, 220, 103, 4);
+  d.drawString(weatherDesc, COL_CX, DESC_Y, 4);
 
   // --- City zone --- opaque bg for the same reason
+  d.fillRect(COL_X, CITY_Y, COL_W, CITY_H, TFT_BLACK);
   d.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
-  d.drawString(cities[currentCityIndex].name, 220, 130, 2);
+  d.drawString(cities[currentCityIndex].name, COL_CX, CITY_Y, 2);
 
   // --- City local time (below city name) ---
   drawCityClock(d, true);
@@ -762,7 +824,7 @@ void drawDiagnosticsScreen() {
   TFT_eSPI &d = tft;
 
   d.fillScreen(TFT_BLACK);
-  d.fillRoundRect(5, 5, 310, 26, 4, TFT_DARKCYAN);
+  d.fillRoundRect(HDR_X, HDR_Y, HDR_W, HDR_H, 4, TFT_DARKCYAN);
   d.setTextColor(TFT_WHITE, TFT_DARKCYAN);
   d.setTextDatum(ML_DATUM);
   d.setFreeFont(&FreeSansBold12pt7b);
@@ -834,6 +896,7 @@ void setup() {
   
   tft.init();
   tft.setRotation(1);
+  logLayoutMetrics();
   tft.fillScreen(TFT_BLACK);
 
   // Take over the backlight pin with PWM (tft.init() already set it digitally HIGH via
