@@ -43,37 +43,35 @@ const int BACKLIGHT_NIGHT_CEILING = 110; // cap even if the room is lit, during 
 const float TOUCH_AX = 0.089410f, TOUCH_BX = -14.903f;  // screenX = AX*raw + BX
 const float TOUCH_AY = 0.064770f, TOUCH_BY = -13.698f;  // screenY = AY*raw + BY
 
-// === Ambient light sensor: PRESENT but its divider is mis-specified ===
-// The sensor is R21 on the silkscreen -- an LDR (a photoresistor is a resistor, hence the
-// R designator), part GT36516, wired from GPIO 34 to GROUND, with a pull-up divider to
-// 3V3 formed by R15 and R19 (reported as 1M each, i.e. ~500k in parallel -- single-sourced,
-// unconfirmed).
+// === Ambient light sensor: R21, WORKS -- but only at 0 dB ADC attenuation ===
+// R21 on the silkscreen is an LDR (a photoresistor is a resistor, hence the R), part
+// GT36516, wired GPIO 34 -> GROUND with a pull-up divider to 3V3 (R15/R19, reported 1M
+// each; single-sourced, unconfirmed). Because it goes to ground, DARK READS HIGH.
 //
-// Measured here: analogRead(34) = 0 at every attenuation (0/2.5/6/11 dB) in room light,
-// under a torch, and covered; analogReadMilliVolts(34) = 142 mV at 11 dB. A floating
-// GPIO 35 control showed normal ADC noise, so the ADC itself is fine.
+// Measured on this board, backlight on at duty 220, covering vs uncovering R21:
+//     attenuation   covered(dark)   uncovered(lit)
+//     0 dB              2500              0
+//     2.5 dB            1952              0
+//     6 dB              1391              0
+//     11 dB              746              0
+// The whole signal lives between ~142 mV and ~740 mV. Arduino's DEFAULT 11 dB stretches
+// the ADC to ~2.5 V full scale, squashing that band into the bottom of the range; 0 dB
+// scales to ~1.1 V and fits it almost exactly. Same sensor, 3.3x the usable resolution,
+// which is why this pin looked dead until the attenuation was set explicitly.
 //
-// That 142 mV is the tell: it matches the documented symptom for this board exactly. The
-// LDR actually fitted has roughly 20x LOWER impedance than the GT36516 the divider was
-// designed for, so the junction never rises out of the ESP32 ADC's bottom dead zone and
-// floors to 0. The sensor responds to light; the divider squashes that response below the
-// ADC's noise floor. Backlight spill from the panel edge onto R21 makes it worse.
-//
-// Consequence for this project: with raw stuck at 0 and the (also wrong, see below)
-// polarity flag, the backlight sat at BACKLIGHT_MIN_DUTY -- 30 of 255, about 12%
-// brightness -- for the entire life of the project.
-//
-// Two ways to get real ambient dimming:
-//   1. Hardware: solder ~51k in parallel with R15, which restores a usable range.
-//   2. I2C: fit a BH1750 on CN1 and ignore R21 entirely. No divider, no backlight-spill
-//      problem if it is mounted away from the panel, and calibrated lux instead of counts.
-// Until one of those happens, ambient dimming stays off and only the night ceiling applies.
-const bool LDR_PRESENT = false;
-
-// R21 is wired GPIO34 -> GND, so a DARK sensor reads HIGHER, not lower. The original
-// `true` here was inverted; corrected now so that re-enabling LDR_PRESENT after the
-// hardware fix behaves correctly rather than backwards.
-const bool LDR_HIGHER_MEANS_BRIGHTER = false;
+// Known limits, accepted deliberately:
+//   * The bright end is compressed: anything from "lit room" upward reads 0, so this
+//     cannot tell a bright room from direct sunlight. It CAN tell dark from lit, which
+//     is the only distinction the night-dimming feature actually needs.
+//   * Backlight spill from the panel edge falls on R21, so the sensor partly sees the
+//     display it is controlling. Covering R21 still produced a strong response at duty
+//     220, so the loop is not saturated, and the existing /8 smoothing in
+//     updateBacklight() damps any oscillation. Watch for slow hunting in a dark room.
+//   * Soldering ~51k in parallel with R15 would decompress the bright end. Not needed
+//     for night dimming; revisit only if proportional daylight sensing is ever wanted.
+const bool LDR_PRESENT = true;
+const bool LDR_HIGHER_MEANS_BRIGHTER = false;  // LDR to GND: dark reads HIGH
+const int  LDR_RAW_DARK = 2500;   // measured reading when fully covered, at ADC_0db
 const int  BACKLIGHT_DEFAULT_DUTY = 200;  // used while no light sensor is available
 const unsigned long BRIGHTNESS_UPDATE_INTERVAL = 2000; // 2 sec
 
@@ -246,8 +244,11 @@ const char* wmoToString(int code) {
 int computeTargetBacklightDuty() {
   int duty = BACKLIGHT_DEFAULT_DUTY;
   if (LDR_PRESENT) {
+    // Scale against the MEASURED dark reading, not the ADC's full 4095 span -- this
+    // sensor never gets near 4095, so using it would waste most of the range.
     int raw = analogRead(LDR_PIN);
-    float lightFrac = LDR_HIGHER_MEANS_BRIGHTER ? raw / 4095.0f : 1.0f - (raw / 4095.0f);
+    float darkFrac = constrain(raw / (float)LDR_RAW_DARK, 0.0f, 1.0f);
+    float lightFrac = LDR_HIGHER_MEANS_BRIGHTER ? darkFrac : 1.0f - darkFrac;
     duty = BACKLIGHT_MIN_DUTY + (int)(lightFrac * (BACKLIGHT_MAX_DUTY - BACKLIGHT_MIN_DUTY));
   }
 
@@ -838,6 +839,10 @@ void setup() {
   // Take over the backlight pin with PWM (tft.init() already set it digitally HIGH via
   // TFT_BACKLIGHT_ON) so brightness can be modulated instead of only on/off.
   ledcSetup(BACKLIGHT_CHANNEL, BACKLIGHT_FREQ, BACKLIGHT_RES_BITS);
+  // 0 dB (~1.1V full scale) rather than the 11 dB default -- see the LDR notes above.
+  // Without this the sensor's entire range collapses into a handful of ADC counts.
+  analogSetPinAttenuation(LDR_PIN, ADC_0db);
+
   ledcAttachPin(TFT_BL, BACKLIGHT_CHANNEL);
   ledcWrite(BACKLIGHT_CHANNEL, currentBacklightDuty);
 
