@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "skill": "esp32-cyd-engineering",
+  "last_verified": "2026-09-16",
+  "policy": {
+    "primary_sources_required": true,
+    "stable_docs_preferred": true,
+    "community_sources_require_corroboration": true,
+    "forbid_unverified_pin_maps": true,
+    "forbid_fabricated_apis": true,
+    "require_build_evidence": true,
+    "require_runtime_disclaimer_without_hardware": true
+  },
+  "sources": [
+    {
+      "id": "espressif-idf-stable",
+      "title": "ESP-IDF Programming Guide, stable ESP32",
+      "url": "https://docs.espressif.com/projects/esp-idf/en/stable/esp32/index.html",
+      "authority": "primary",
+      "use_for": [
+        "framework",
+        "APIs",
+        "build",
+        "configuration"
+      ],
+      "notes": "Pin implementation work to the stable documentation matching the project's installed ESP-IDF release."
+    },
+    {
+      "id": "espressif-get-started",
+      "title": "ESP-IDF Get Started, ESP32",
+      "url": "https://docs.espressif.com/projects/esp-idf/en/latest/esp32/get-started/",
+      "authority": "primary",
+      "use_for": [
+        "toolchain",
+        "CMake",
+        "Ninja",
+        "build and flash workflow"
+      ],
+      "notes": "The latest branch is continually developed; select versioned/stable docs for code decisions."
+    },
+    {
+      "id": "espressif-ota",
+      "title": "ESP-IDF OTA documentation",
+      "url": "https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/system/ota.html",
+      "authority": "primary",
+      "use_for": [
+        "OTA partitions",
+        "safe update",
+        "rollback"
+      ],
+      "notes": "Verify behavior against the exact installed ESP-IDF version."
+    },
+    {
+      "id": "espressif-https-ota",
+      "title": "ESP HTTPS OTA",
+      "url": "https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/system/esp_https_ota.html",
+      "authority": "primary",
+      "use_for": [
+        "HTTPS OTA",
+        "server verification",
+        "resumption"
+      ],
+      "notes": "Use root trust/certificate bundle as documented; do not disable verification."
+    },
+    {
+      "id": "espressif-freertos",
+      "title": "ESP-IDF FreeRTOS Overview, stable ESP32",
+      "url": "https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/system/freertos.html",
+      "authority": "primary",
+      "use_for": [
+        "tasks",
+        "SMP",
+        "kernel configuration"
+      ],
+      "notes": "ESP-IDF FreeRTOS differs from vanilla FreeRTOS; do not assume vanilla behavior."
+    },
+    {
+      "id": "cyd-rnt",
+      "title": "Getting Started with ESP32 Cheap Yellow Display",
+      "url": "https://randomnerdtutorials.com/cheap-yellow-display-esp32-2432s028r/",
+      "authority": "community",
+      "use_for": [
+        "board orientation",
+        "common display/touch setup"
+      ],
+      "notes": "Corroborate pins and controller details against the physical board/repository."
+    },
+    {
+      "id": "cyd-rnt-micropython",
+      "title": "MicroPython ESP32 Cheap Yellow Display",
+      "url": "https://randomnerdtutorials.com/micropython-cheap-yellow-display-board-cyd-esp32-2432s028r/",
+      "authority": "community",
+      "use_for": [
+        "MicroPython prototype context"
+      ],
+      "notes": "Corroborate firmware, driver, controller, and pin compatibility."
+    }
+  ]
+}

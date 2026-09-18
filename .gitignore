@@ -1,0 +1,5 @@
+.pio/
+.vscode/
+include/secrets.h
+.remember/
+.DS_Store

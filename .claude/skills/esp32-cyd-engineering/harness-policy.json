@@ -1,0 +1,68 @@
+{
+  "skill": "esp32-cyd-engineering",
+  "version": "1.0.0",
+  "target": {
+    "board": "ESP32-2432S028R",
+    "chip": "esp32",
+    "module": "UNVERIFIED",
+    "revision": "UNVERIFIED"
+  },
+  "discovery": {
+    "required_files": [
+      "platformio.ini",
+      "idf_component.yml",
+      "CMakeLists.txt",
+      "sdkconfig",
+      "sdkconfig.defaults",
+      "partitions.csv",
+      "lv_conf.h"
+    ],
+    "search_patterns": [
+      "TFT_eSPI",
+      "ILI9341",
+      "XPT2046",
+      "LVGL",
+      "LV_VERSION",
+      "TFT_CS",
+      "TFT_DC",
+      "TFT_RST",
+      "TOUCH_CS",
+      "SPI_HOST",
+      "board_build.flash_size"
+    ],
+    "fail_on_conflicting_pin_maps": true
+  },
+  "constraints": {
+    "no_guessing": true,
+    "no_unpinned_dependency_additions": true,
+    "no_silent_major_upgrades": true,
+    "no_hardcoded_secrets": true,
+    "no_unbounded_waits": true,
+    "no_runtime_claim_without_hardware_evidence": true
+  },
+  "preferred_framework_order": [
+    "existing-repository-choice",
+    "esp-idf",
+    "arduino-as-idf-component",
+    "arduino",
+    "micropython"
+  ],
+  "verification": {
+    "build_required": true,
+    "clean_build_preferred": true,
+    "static_analysis_if_configured": true,
+    "size_report_required": true,
+    "hardware_smoke_test_when_connected": true,
+    "capture_serial_log_when_connected": true
+  },
+  "output_sections": [
+    "verified_facts",
+    "unverified_facts",
+    "plan",
+    "files_changed",
+    "commands_and_results",
+    "hardware_evidence",
+    "source_updates",
+    "remaining_risks"
+  ]
+}
