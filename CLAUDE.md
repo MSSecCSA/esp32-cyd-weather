@@ -38,6 +38,8 @@ Hardware validation pass, driven by a serial-command test rig kept out of `src/`
 | BOOT button (GPIO 0) | **Works** — idle 1, pressed 0, clean transitions | 3 presses captured with no bounce artifacts |
 | Touch controller | **Works, on SCK=25/MISO=39/MOSI=32/CS=33** | Raw coords track a finger after re-pinning; saturated all-ones before |
 | Touch calibration | **Done.** 5-point fit, worst residual **6.3 px**, axes aligned, neither inverted | `TOUCH_AX/BX/AY/BY` in `main.cpp` |
+| Gestures end-to-end | **All confirmed by use (2026-09-18):** tap (next city), vertical swipe (view toggle), long-press (pause). | Exercised on the physical unit after calibration |
+| Clock view under auto-rotate | **Confirmed.** Strip cycles; the clock is no longer overpainted | Watched through auto-switch cycles on the unit |
 | Light sensor (GPIO 34) | **Present but unusable as shipped.** Flat 0 at 0/2.5/6/11 dB; `analogReadMilliVolts` = **142 mV** | GPIO 35 (floating control) showed normal noise, so the ADC is fine. The 142 mV matches this board's documented LDR defect exactly — see below |
 | I²C bus on SDA 27 / SCL 22 | **Free** — full scan completes, no hang, 0 devices | Confirms the pins aren't held by other hardware |
 | microSD slot | No card present (driver reached CMD0, got no reply) | Untested beyond that |
@@ -70,7 +72,8 @@ The live partition read is what proves the `huge_app.csv` switch actually took e
 ### UNVERIFIED / BLOCKED — needs physical access or user interaction
 
 - **The live, NTP-driven clock display.** The `setenv`/padding behaviour and the zero-leak result are VERIFIED on this board, and padding's DST equivalence was verified by driving the clock to chosen instants with `settimeofday()`. But WiFi cannot associate at the current location (the `secrets.h` SSID is elsewhere; the local Meraki AP has a captive portal the ESP32 can't traverse), so `configTime()` has never actually synced here and **no on-screen clock has been observed showing a correct real time**. Don't let the strength of the probe evidence bleed into a claim about the running display.
-- **RGB LED and micro-SD slot.** Present on many CYD revisions (LED commonly GPIO4/16/17) but unconfirmed here — deliberately untouched, since driving the wrong GPIO is a real hazard. Note the SD slot typically shares the VSPI bus with touch, so adding SD means assigning explicit bus ownership.
+- **RGB LED.** Commonly GPIO 4/16/17 active-LOW, but unconfirmed on this unit — the `tools/hwtest` `l` command has been run twice and not observed either time. Deliberately untouched otherwise, since driving the wrong GPIO is a real hazard.
+- **micro-SD slot.** Wired to GPIO 5 on the VSPI bus (18/19/23). The driver reaches CMD0 and gets no reply, which is consistent with no card inserted; nothing beyond that is confirmed. Note this bus is **not** shared with touch — touch has its own pins (see SPI bus ownership above), so there is no contention to manage.
 
 ### SPI bus ownership (important)
 
@@ -224,6 +227,8 @@ With raw pinned at 0, `lightFrac` was permanently 0 and the backlight sat at `BA
 | Long-press (~700ms, low drift) | Toggle auto-rotate pause/resume ("Paused" replaces "Auto 10s" in the info bar) |
 | Double-tap (2nd tap within 400ms) | Open the diagnostics overlay (first tap still advances the city as normal; the 2nd tap's advance is replaced) |
 | Any tap/swipe/long-press while diagnostics is open | Dismiss back to whichever view was active |
+
+All four gestures are confirmed working on the physical unit as of 2026-09-18. Earlier advice in this project to *reduce* the gesture vocabulary was premised on touch being unreliable — it was in fact not working at all (see the SPI bus ownership note), and once re-pinned and calibrated the full set behaves. Keep the diagnostic line below regardless.
 
 Every touch release logs one diagnostic line — held time and per-axis travel — because a gesture that fails to classify is otherwise completely silent:
 
