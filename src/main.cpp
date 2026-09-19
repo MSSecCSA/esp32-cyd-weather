@@ -126,19 +126,25 @@ struct City {
   const char* tz;  // POSIX timezone string for local time
 };
 
+// Edit this list to taste -- it is the single source of truth for which cities are
+// fetched and which local times are shown. `tz` is a POSIX TZ string, NOT an IANA name
+// ("America/New_York" will not work here); every one must be <= TZ_PADDED_LEN characters,
+// which checkTimezoneLengths() verifies loudly at boot. NUM_CITIES is derived, so adding
+// or removing a city is a one-line change. Latitude/longitude are what actually drive the
+// forecast, so they must match the city you name.
 City cities[] = {
-  {38.9159,  -84.2432,  "California, KY",     "EST5EDT,M3.2.0,M11.1.0"},
-  {48.8566,    2.3522,  "Paris, France",      "CET-1CEST,M3.5.0,M10.5.0/3"},
-  {35.2271,  -80.8431,  "Charlotte, NC",     "EST5EDT,M3.2.0,M11.1.0"},
-  {47.6062, -122.3321,  "Seattle, WA",       "PST8PDT,M3.2.0,M11.1.0"},
-  {-3.3869,  36.6830,  "Arusha, Tanzania",   "EAT-3"}
+  {40.7128,  -74.0060, "New York, NY",     "EST5EDT,M3.2.0,M11.1.0"},
+  {51.5072,   -0.1276, "London, UK",       "GMT0BST,M3.5.0/1,M10.5.0/2"},
+  {48.8566,    2.3522, "Paris, France",    "CET-1CEST,M3.5.0,M10.5.0/3"},
+  {35.6762,  139.6503, "Tokyo, Japan",     "JST-9"},
+  {-33.8688, 151.2093, "Sydney, AU",       "AEST-10AEDT,M10.1.0,M4.1.0/3"}
 };
 const int NUM_CITIES = sizeof(cities) / sizeof(cities[0]);
 int currentCityIndex = 0;
 
 // === Time zones: one setenv(), fixed-width values ===
 // The home zone, used by the header clock and the night-brightness ceiling.
-const char *HOME_TZ = "EST5EDT,M3.2.0,M11.1.0";
+const char *HOME_TZ = "EST5EDT,M3.2.0,M11.1.0";   // <-- set this to YOUR zone
 
 // Every TZ string this firmware sets is right-padded with spaces to exactly this many
 // characters before reaching setenv(). That is load-bearing, not cosmetic: it is the

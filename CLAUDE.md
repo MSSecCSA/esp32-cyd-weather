@@ -74,7 +74,7 @@ Via `esptool.py --port <port> flash_id` and `read_flash 0x8000 0xc00` + `gen_esp
 | Crystal | 40MHz | `esptool flash_id` |
 | Flash size | **4MB** (mfr `0x5e`, device `0x4016`) | `esptool flash_id` |
 | Flash voltage | 3.3V (set by strapping pin) | `esptool flash_id` |
-| MAC | `88:57:21:2e:11:b8` | `esptool flash_id` |
+| MAC | *(redacted — read yours with `esptool flash_id`)* | `esptool flash_id` |
 | Live partition table | `app0` 3M @0x10000, `spiffs` 896K, `coredump` 64K, `nvs` 20K, `otadata` 8K | read back from flash |
 
 The live partition read is what proves the `huge_app.csv` switch actually took effect on the device — not just that the build accepted it. `logBootDiagnostics()` in `setup()` re-confirms chip/flash/PSRAM/heap at every boot, so a serial capture alone is sufficient evidence.

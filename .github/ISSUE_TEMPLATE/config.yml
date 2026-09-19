@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Show your fork
+    url: https://github.com/MSSecCSA/esp32-cyd-weather/issues/new
+    about: Built something on top of this? Open an issue — I'd like to link to it.

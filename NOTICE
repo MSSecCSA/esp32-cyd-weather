@@ -1,0 +1,14 @@
+CYD Weather Station
+Copyright 2026 Ben Moore (github.com/MSSecCSA)
+
+This product includes software developed for the
+ESP32-2432S028R "Cheap Yellow Display" weather station:
+
+    https://github.com/MSSecCSA/esp32-cyd-weather
+
+Licensed under the Apache License, Version 2.0. If you fork, redistribute,
+or build upon this work, please retain this NOTICE and credit the original
+project above. Attribution is genuinely appreciated -- much of what is here
+was established by measurement on real hardware rather than copied from
+documentation, and it is easier for the next person to find if the trail
+leads back.
