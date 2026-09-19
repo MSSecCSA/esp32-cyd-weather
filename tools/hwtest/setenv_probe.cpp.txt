@@ -1,0 +1,105 @@
+// Probe 3: is right-padding a POSIX TZ string with spaces semantically neutral,
+// and does it eliminate the setenv length-change leak?
+//
+// Probe 2 established: setenv("TZ", v) leaks ~24 bytes iff strlen(v) differs from
+// the previous value's strlen. Same length (different value) = 0. tzset() = innocent.
+// If padding is parser-neutral, padding every TZ to a fixed width makes the leak 0
+// while keeping exact localtime_r/DST semantics.
+#include <Arduino.h>
+#include <sys/time.h>
+#include <string.h>
+
+#define PADW 31
+
+static const char *TZS[] = {
+  "EST5EDT,M3.2.0,M11.1.0",     // 22  US Eastern
+  "CET-1CEST,M3.5.0,M10.5.0/3", // 26  Europe/Paris
+  "PST8PDT,M3.2.0,M11.1.0",     // 22  US Pacific
+  "EAT-3",                      //  5  Africa/Nairobi (no DST)
+};
+static const int NTZ = sizeof(TZS)/sizeof(TZS[0]);
+
+struct Moment { const char *label; time_t epoch; };
+static Moment MOMENTS[] = {
+  {"winter        ", 1768478400}, // 2026-01-15 12:00Z
+  {"summer        ", 1784116800}, // 2026-07-15 12:00Z
+  {"US pre-fallbk ", 1793511000}, // 2026-11-01 05:30Z = 01:30 EDT
+  {"US post-fallbk", 1793514600}, // 2026-11-01 06:30Z = 01:30 EST
+  {"EU pre-fallbk ", 1792888200}, // 2026-10-25 00:30Z = 02:30 CEST
+  {"EU post-fallbk", 1792891800}, // 2026-10-25 01:30Z = 02:30 CET
+};
+static const int NMOM = sizeof(MOMENTS)/sizeof(MOMENTS[0]);
+
+static void setClock(time_t e) {
+  struct timeval tv; tv.tv_sec = e; tv.tv_usec = 0;
+  settimeofday(&tv, NULL);
+}
+
+static void padTz(char *out, const char *tz) {
+  size_t n = strlen(tz);
+  if (n > PADW) n = PADW;
+  memset(out, ' ', PADW);
+  memcpy(out, tz, n);
+  out[PADW] = '\0';
+}
+
+// Render local time for tz at the current clock. Returns tm_isdst separately.
+static void render(const char *tzValue, char *out, size_t outLen, int *isdst) {
+  setenv("TZ", tzValue, 1);
+  tzset();
+  time_t now; time(&now);
+  struct tm lt;
+  localtime_r(&now, &lt);
+  strftime(out, outLen, "%Y-%m-%d %H:%M:%S", &lt);
+  *isdst = lt.tm_isdst;
+}
+
+void setup() {
+  Serial.begin(115200);
+  delay(2500);
+  Serial.println("\n=== TZ padding equivalence probe (PADW=31) ===");
+
+  int mismatches = 0;
+  for (int m = 0; m < NMOM; m++) {
+    setClock(MOMENTS[m].epoch);
+    Serial.printf("\n--- %s (epoch %ld) ---\n", MOMENTS[m].label, (long)MOMENTS[m].epoch);
+    for (int i = 0; i < NTZ; i++) {
+      char plainStr[40], padStr[40], padded[PADW+1];
+      int dstPlain, dstPad;
+      render(TZS[i], plainStr, sizeof(plainStr), &dstPlain);
+      padTz(padded, TZS[i]);
+      render(padded, padStr, sizeof(padStr), &dstPad);
+      bool same = (strcmp(plainStr, padStr) == 0) && (dstPlain == dstPad);
+      if (!same) mismatches++;
+      Serial.printf("  %-27s plain=%s isdst=%d | padded=%s isdst=%d  %s\n",
+                    TZS[i], plainStr, dstPlain, padStr, dstPad, same ? "MATCH" : "*** MISMATCH ***");
+    }
+  }
+
+  Serial.printf("\nequivalence mismatches: %d\n", mismatches);
+
+  // Heap behaviour with padding: alternate all 4 zones, padded, 1000 iterations.
+  const int N = 1000;
+  char p[NTZ][PADW+1];
+  for (int i = 0; i < NTZ; i++) padTz(p[i], TZS[i]);
+  setenv("TZ", p[0], 1); tzset();
+  delay(50);
+  uint32_t before = ESP.getFreeHeap();
+  for (int k = 0; k < N; k++) { setenv("TZ", p[k % NTZ], 1); tzset(); }
+  uint32_t after = ESP.getFreeHeap();
+  Serial.printf("padded rotation: before=%u after=%u lost=%d bytes/call=%.4f\n",
+                before, after, (int)(before-after), (float)((int32_t)before-(int32_t)after)/N);
+
+  // Control: same rotation UNPADDED, to show the leak is still there without the fix.
+  setenv("TZ", TZS[0], 1); tzset();
+  delay(50);
+  before = ESP.getFreeHeap();
+  for (int k = 0; k < N; k++) { setenv("TZ", TZS[k % NTZ], 1); tzset(); }
+  after = ESP.getFreeHeap();
+  Serial.printf("UNPADDED rotation: before=%u after=%u lost=%d bytes/call=%.4f\n",
+                before, after, (int)(before-after), (float)((int32_t)before-(int32_t)after)/N);
+
+  Serial.println("\n=== PROBE COMPLETE ===");
+}
+
+void loop() { delay(1000); }
