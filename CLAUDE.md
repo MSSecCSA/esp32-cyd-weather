@@ -28,6 +28,21 @@ WiFi credentials live in `include/secrets.h` (gitignored, real values) with `inc
 
 This project follows the `esp32-cyd-engineering` skill's rule that board facts are **not** proven by matching a community pin map. Each fact below is labelled by how it is actually known. Re-verify with the commands shown rather than trusting this table.
 
+### VERIFIED — measured on the connected device (2026-09-18)
+
+Hardware validation pass, driven by a serial-command test rig kept out of `src/`:
+
+| Fact | Result | How |
+|---|---|---|
+| USB-serial bridge | **CH340** (VID `0x1A86`, PID `0x7523`), one device | `ioreg -p IOUSB`; both USB ports feed this one chip |
+| BOOT button (GPIO 0) | **Works** — idle 1, pressed 0, clean transitions | 3 presses captured with no bounce artifacts |
+| Touch controller | **Works, on SCK=25/MISO=39/MOSI=32/CS=33** | Raw coords track a finger after re-pinning; saturated all-ones before |
+| Touch calibration | **Done.** 5-point fit, worst residual **6.3 px**, axes aligned, neither inverted | `TOUCH_AX/BX/AY/BY` in `main.cpp` |
+| Light sensor (GPIO 34) | **Present but unusable as shipped.** Flat 0 at 0/2.5/6/11 dB; `analogReadMilliVolts` = **142 mV** | GPIO 35 (floating control) showed normal noise, so the ADC is fine. The 142 mV matches this board's documented LDR defect exactly — see below |
+| I²C bus on SDA 27 / SCL 22 | **Free** — full scan completes, no hang, 0 devices | Confirms the pins aren't held by other hardware |
+| microSD slot | No card present (driver reached CMD0, got no reply) | Untested beyond that |
+| RGB LED (GPIO 4/16/17) | **Still unconfirmed** — test ran twice, not observed | Re-run the rig's `l` command and watch the board |
+
 ### VERIFIED — read from the connected device (2026-09-16)
 
 Via `esptool.py --port <port> flash_id` and `read_flash 0x8000 0xc00` + `gen_esp32part.py`:
@@ -54,14 +69,35 @@ The live partition read is what proves the `huge_app.csv` switch actually took e
 
 ### UNVERIFIED / BLOCKED — needs physical access or user interaction
 
-- **Touch calibration.** Never performed. Gestures use raw XPT2046 values with a guessed swipe sign. The skill requires calibrating on the physical unit and storing the result with a version/checksum. Requires someone to touch known screen points.
-- **LDR polarity.** Requires covering/uncovering the sensor while watching `analogRead(34)`.
 - **The live, NTP-driven clock display.** The `setenv`/padding behaviour and the zero-leak result are VERIFIED on this board, and padding's DST equivalence was verified by driving the clock to chosen instants with `settimeofday()`. But WiFi cannot associate at the current location (the `secrets.h` SSID is elsewhere; the local Meraki AP has a captive portal the ESP32 can't traverse), so `configTime()` has never actually synced here and **no on-screen clock has been observed showing a correct real time**. Don't let the strength of the probe evidence bleed into a claim about the running display.
 - **RGB LED and micro-SD slot.** Present on many CYD revisions (LED commonly GPIO4/16/17) but unconfirmed here — deliberately untouched, since driving the wrong GPIO is a real hazard. Note the SD slot typically shares the VSPI bus with touch, so adding SD means assigning explicit bus ownership.
 
 ### SPI bus ownership (important)
 
-`USE_HSPI_PORT` puts the **display** on HSPI; `XPT2046_Touchscreen` drives **touch** on the default VSPI bus. `TOUCH_CS`/`SPI_TOUCH_FREQUENCY` are deliberately **not** defined in `build_flags`: those enable TFT_eSPI's own touch driver, which does `pinMode(TOUCH_CS, OUTPUT); digitalWrite(TOUCH_CS, HIGH)` at init (`TFT_eSPI.cpp:543-546`) — i.e. a second driver claiming GPIO33 as a chip select on a *different* bus. That was harmless only because `tft.getTouch()` is never called. Don't re-add them.
+Three SPI-ish things share this board and none of them are on the pins you'd assume.
+
+- **Display** — HSPI, via `USE_HSPI_PORT` and the `TFT_*` pins in `build_flags` (12/13/14/15).
+- **Touch (XPT2046)** — its own dedicated wiring: `SCK=25, MISO=39, MOSI=32, CS=33, IRQ=36`. **Not** the VSPI default pins.
+- **microSD** — the actual VSPI defaults: `SCK=18, MISO=19, MOSI=23, CS=5`.
+
+**This was wrong in this file until it was measured, and the bug it hid is instructive.**
+`XPT2046_Touchscreen::begin()` calls a bare `SPI.begin()`, which claims VSPI's *default*
+pins — where the touch chip is not. Every read then clocked against a floating MISO and
+returned all-ones (`x=8191 y=8191 z=4095`), and `loop()`'s own sanity gate (`p.x < 3900`)
+silently discarded all of it. Net effect: **touch never worked at any point in this
+project's history**, while presenting as "unreliable" rather than as broken. `setup()` now
+calls `SPI.begin(TOUCH_SCK, TOUCH_MISO, TOUCH_MOSI, TOUCH_CS)` *before* `ts.begin()`;
+ESP32's `SPIClass::begin()` returns early when the bus is already up, so the library adopts
+the correct pins. Verified on hardware: raw coordinates now track a finger, and taps drive
+city changes.
+
+A corollary worth keeping: **touch and microSD do not share a bus.** They only appeared to
+when touch was squatting on VSPI — which is why running `SD.begin(5)` used to hard-hang the
+touch driver. With touch on its own pins that conflict is gone.
+
+`TOUCH_CS`/`SPI_TOUCH_FREQUENCY` remain deliberately **undefined** in `build_flags`: those
+enable TFT_eSPI's own touch driver, which does `pinMode(TOUCH_CS, OUTPUT); digitalWrite(TOUCH_CS, HIGH)`
+at init (`TFT_eSPI.cpp:543-546`) — a second driver claiming GPIO 33. Don't re-add them.
 
 ## Transport security (open deviation — read before changing)
 
@@ -128,6 +164,24 @@ The live partition read is what proves the `huge_app.csv` switch actually took e
 
 - **Hardware:** ILI9341 320x240 TFT over SPI, plus an XPT2046 resistive touch controller on its own CS/IRQ pins (`TOUCH_CS`/`TOUCH_IRQ`, defined near the top of `main.cpp`; touch SPI speed is set separately via `SPI_TOUCH_FREQUENCY`). See the CYD hardware section above for board-level detail.
 
+- **Two full-screen views, and three redraw entry points. Getting these wrong is the most common bug in this file.** `VIEW_WEATHER` is the detailed layout; `VIEW_CLOCK` is a roughly 70/30 split with a large home clock over a condensed weather strip, reached by a **vertical swipe**. The two layouts share no zones, so switching does a single `fillScreen()` — the per-zone erase discipline used inside each layout cannot clean up after the other one.
+
+  Never call `drawWeatherScreen()` or `drawWifiStatusDot()` directly from `loop()` or the gesture handler: both draw at the weather layout's coordinates unconditionally, so in the clock view they land on top of whatever is already there. Use the dispatcher that matches the granularity you need:
+
+  | Call | Use when |
+  |---|---|
+  | `drawCurrentView()` | The whole panel needs repainting — view switch, overlay dismissed, first draw |
+  | `redrawWeatherContent()` | The weather *data* changed — new city, fresh fetch, pause toggled |
+  | `redrawWifiIndicator()` | Only the connection dot changed |
+
+  **This has bitten twice, both times from editing by pattern-match instead of enumerating call sites.** Once a blanket replace matched the dispatcher's own `else` branch and produced `drawCurrentView()` calling itself — which hung *silently* rather than crashing, because a tail call at `-O2` becomes an unconditional jump, so there was no stack overflow and no panic. The second time the same replace *missed* the auto-switch call site (indented 4 spaces where the pattern expected 2, 6 or 8), so the full weather layout repainted over the clock view every 10 seconds. If you change redraw routing, `grep` every call site and convert them individually.
+
+  `redrawWeatherContent()` exists specifically so a city change doesn't repaint the big clock — doing so makes the time visibly blink every 10 seconds under auto-rotate.
+
+- **Font 8 is the only face large enough for the clock view, and it has no letters.** `LOAD_FONT8` gives a 75px face containing **only `1234567890:-.`** — so the AM/PM tag is drawn separately in font 4 beside the digits, not concatenated into the time string. `logLayoutMetrics()` measures it at boot: `"07:42"` renders 249px of the 320px width.
+
+- **`logLayoutMetrics()` measures real rendered text widths at boot** rather than trusting estimates, and logs `*** COLLIDES ***` / `*** OVERFLOWS ***` if anything stops fitting its zone. Added after three layout faults shipped at once (a clipped header, a clock box over the city name, and stale text left by centred strings that got shorter). Adding a city with a long name or a wordier condition string now reports itself on serial instead of appearing as a smear on the panel.
+
 - **Global-state redraw model, with one exception.** A handful of globals (`weatherTemp`, `weatherDesc`, `weatherHumidity`, `weatherWind`, `weatherCodeInt`, `wifiConnected`, `currentCityIndex`, ...) hold the latest fetched values, and most updates trigger a full `drawWeatherScreen()` repaint. The exception is the clock: `drawHomeClock()`/`drawCityClock()` are factored out so `loop()` can refresh just those small text regions once a second (`CLOCK_TICK_INTERVAL`) via a direct `fillRect`-then-`drawString` on `tft`, without paying for a full sprite-buffered redraw. Before this, the on-screen clocks only updated on the 10s city-switch cadence and visibly froze in between.
 
 - **City rotation drives both data and UI.** The `cities[]` array (`{lat, lon, name, tz}`, `tz` a POSIX TZ string) is the single source of truth for which city's weather is fetched and which local time is shown. `NUM_CITIES` is derived via `sizeof(cities)/sizeof(cities[0])`, so adding/removing a city is a one-line change to the array. Advancing city happens three ways, all converging on the same fetch+redraw path — see Gestures below.
@@ -148,7 +202,11 @@ The live partition read is what proves the `huge_app.csv` switch actually took e
 
 - **Anti-aliased typography via GFXFF, used selectively.** The title and temperature figure use `setFreeFont(&FreeSansBold12pt7b)` / `&FreeSansBold24pt7b` (TFT_eSPI's smooth/anti-aliased free-font path) instead of the classic bitmap fonts; `setTextFont(2)` immediately afterward resets back to classic fonts for everything else. This reset matters more than it looks: TFT_eSPI reuses font ID `1` to mean "classic GLCD font" when `gfxFont` is null and "use the free font" when it isn't — `setTextFont(n)` clears `gfxFont`, so skipping the reset would make any later `drawString(..., 1)` call unexpectedly render in giant free-font text. The smaller UI text (city name, clocks, humidity/wind, footer) intentionally stays on classic fonts — untested territory for GFXFF vertical alignment at that size, and the classic fonts already look fine that small.
 
-- **Backlight is PWM-driven with ambient + time-of-day brightness**, not just on/off. `setup()` calls `ledcAttachPin(TFT_BL, BACKLIGHT_CHANNEL)` right after `tft.init()` (which otherwise leaves the pin as a plain digital HIGH), then `updateBacklight()` runs every `BRIGHTNESS_UPDATE_INTERVAL` (2s) in `loop()`. Target brightness comes from the onboard LDR (`analogRead(LDR_PIN)`, mapped to a `BACKLIGHT_MIN_DUTY`–`BACKLIGHT_MAX_DUTY` range), then clamped to `BACKLIGHT_NIGHT_CEILING` during home-local night hours (22:00–07:00) so a lit room at 2am doesn't still force full brightness at a bedside. `currentBacklightDuty` is smoothed toward the target (`/8` per update) rather than snapping, so a passing shadow over the sensor doesn't visibly flash the panel. **`LDR_HIGHER_MEANS_BRIGHTER` is a guess** (wiring polarity varies by board batch) — flip it if brightness moves the wrong way when tested on real hardware.
+- **Backlight is PWM-driven with ambient + time-of-day brightness**, not just on/off. `setup()` calls `ledcAttachPin(TFT_BL, BACKLIGHT_CHANNEL)` right after `tft.init()` (which otherwise leaves the pin as a plain digital HIGH), then `updateBacklight()` runs every `BRIGHTNESS_UPDATE_INTERVAL` (2s) in `loop()`. Target brightness comes from the onboard LDR (`analogRead(LDR_PIN)`, mapped to a `BACKLIGHT_MIN_DUTY`–`BACKLIGHT_MAX_DUTY` range), then clamped to `BACKLIGHT_NIGHT_CEILING` during home-local night hours (22:00–07:00) so a lit room at 2am doesn't still force full brightness at a bedside. `currentBacklightDuty` is smoothed toward the target (`/8` per update) rather than snapping, so a passing shadow over the sensor doesn't visibly flash the panel. **Ambient dimming is disabled, because the on-board light sensor is unusable as shipped — not because it is missing.** The sensor is **R21** on the silkscreen: an LDR (part GT36516) wired from GPIO 34 to **ground**, with a pull-up divider to 3V3 from R15/R19 (reported 1M each ≈ 500k parallel; single-sourced, unconfirmed). Measured here: `analogRead` = 0 at every attenuation in room light, under a torch and covered, with `analogReadMilliVolts` = **142 mV** — which matches this board's documented LDR defect exactly. The LDR actually fitted has roughly **20× lower impedance** than the GT36516 the divider assumes, so the junction never climbs out of the ESP32 ADC's bottom dead zone and floors to 0. Backlight spill from the panel edge onto R21 compounds it. **An earlier version of this file wrongly recorded the sensor as absent.**
+
+Because the LDR goes to ground, **dark reads HIGHER** — so the original `LDR_HIGHER_MEANS_BRIGHTER = true` was also inverted. It is now `false`, so that re-enabling the feature behaves correctly rather than backwards.
+
+With raw pinned at 0, `lightFrac` was permanently 0 and the backlight sat at `BACKLIGHT_MIN_DUTY` — **30 of 255, about 12% brightness, for the entire life of the project.** `LDR_PRESENT` is now `false` and `computeTargetBacklightDuty()` returns `BACKLIGHT_DEFAULT_DUTY` (200), still subject to the night ceiling. Two routes to real ambient dimming: solder **~51k in parallel with R15** to restore usable range, or fit a **BH1750 on CN1** and ignore R21 entirely.
 
 - **Touch gestures: tap / swipe / long-press / double-tap**, all from one state machine in `loop()`. It tracks touch-down position/time (`touchStartX/Y`, `touchStartTime`) separately from the continuously-updated "still held" position (`lastTouchX/Y`) — the original implementation re-stamped its timestamp every polling tick, which meant it never actually measured hold duration. See Gestures below for the behavior table.
 
@@ -161,7 +219,16 @@ The live partition read is what proves the `huge_app.csv` switch actually took e
 | Gesture | Effect |
 |---|---|
 | Tap | Next city |
-| Horizontal swipe | Previous city (direction may need flipping — see hardware note above) |
+| Horizontal swipe | Previous city (threshold 45 **screen px**, not raw ADC counts) |
+| **Vertical swipe** | **Toggle between the weather view and the 70/30 clock view.** Mutually exclusive with the horizontal test — each axis must dominate the other by 2×, so a sloppy diagonal falls through and is treated as a tap |
 | Long-press (~700ms, low drift) | Toggle auto-rotate pause/resume ("Paused" replaces "Auto 10s" in the info bar) |
 | Double-tap (2nd tap within 400ms) | Open the diagnostics overlay (first tap still advances the city as normal; the 2nd tap's advance is replaced) |
-| Any tap/swipe/long-press while diagnostics is open | Dismiss back to the weather screen |
+| Any tap/swipe/long-press while diagnostics is open | Dismiss back to whichever view was active |
+
+Every touch release logs one diagnostic line — held time and per-axis travel — because a gesture that fails to classify is otherwise completely silent:
+
+```
+touch release: held=180ms dx=3 dy=62 (swipe needs |d|>45 and 2x the other axis; tap window 50-700ms)
+```
+
+That distinguishes the three ways a swipe can fail to register: held too long (past the 700ms long-press threshold), travelled too little (under 45px), or not detected at all.

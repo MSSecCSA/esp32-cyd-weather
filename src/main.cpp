@@ -3,6 +3,7 @@
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
 #include <TFT_eSPI.h>
+#include <SPI.h>   // used directly: the touch bus is re-pinned before ts.begin()
 #include <XPT2046_Touchscreen.h>
 #include <math.h>
 #include <esp_heap_caps.h>
@@ -17,7 +18,52 @@
 // === Pin Definitions ===
 #define TOUCH_CS 33
 #define TOUCH_IRQ 36
+// The XPT2046 has its OWN SPI wiring on this board -- it is NOT on the VSPI default
+// pins (18/19/23) that a bare SPI.begin() would claim. Measured on hardware: talking
+// to it on the defaults clocks against a floating MISO and returns all-ones
+// (x=8191 y=8191 z=4095), which the sanity gate in loop() then silently discarded --
+// so touch appeared merely "unreliable" while in fact never working once.
+#define TOUCH_SCK  25
+#define TOUCH_MISO 39
+#define TOUCH_MOSI 32
 #define LDR_PIN 34  // onboard light-dependent resistor on this CYD board, unused until now
+
+// === Screen layout (320x240, rotation 1) ===
+// Every text zone is an explicit rectangle that gets fillRect-cleared before drawing.
+// Relying on an opaque text background (setTextColor(fg,bg)) is NOT enough: it paints
+// only behind the glyphs actually drawn, so a CENTRED string that gets shorter leaves
+// the previous string's tails sticking out on both sides. That is what smeared the city
+// name and description together as the rotation advanced.
+//
+// The bands below are non-overlapping by construction. logLayoutMetrics() measures the
+// real rendered widths at boot and shouts if anything no longer fits, so adding a city
+// with a long name or a wordier description can't silently reintroduce a collision.
+const char *HEADER_TITLE = "WEATHER";   // "WEATHER NOW" rendered ~180px wide in
+                                        // FreeSansBold12pt7b and ran under the clock box
+const int HDR_X = 5,  HDR_Y = 5,  HDR_W = 310, HDR_H = 26;
+const int HDR_TITLE_X   = 12;           // ML_DATUM baseline x for the title
+const int HDR_CLOCK_X   = 140;          // clock box starts here; title must end before it
+const int HDR_CLOCK_W   = 168;
+const int HDR_CLOCK_R   = 300;          // MR_DATUM right edge for the clock string
+
+const int COL_X = 124, COL_W = 191;     // right-hand data column (vertical divider at x=120)
+const int COL_CX = COL_X + COL_W / 2;   // centre used by every TC_DATUM draw in the column
+
+const int TEMP_Y  = 44,  TEMP_H  = 59;  // 44..102  big temperature figure
+const int DESC_Y  = 103, DESC_H  = 26;  // 103..128 condition text
+const int CITY_Y  = 130, CITY_H  = 16;  // 130..145 city name
+const int CTIME_Y = 147, CTIME_H = 16;  // 147..162 city local time (was 140, overlapping)
+
+// --- Alternate "clock" view: roughly 70% clock / 30% weather ---
+// The split lands at y=168 (70% of 240). Font 8 is the 75px face and carries ONLY
+// "1234567890:-." -- no letters -- so the AM/PM tag is drawn beside it in font 4
+// rather than being part of the time string.
+const int CLK_TIME_Y  = 30,  CLK_TIME_H = 84;   // 30..113   big HH:MM
+const int CLK_DATE_Y  = 120, CLK_DATE_H = 28;   // 120..147  weekday + date
+const int CLK_SEP_Y   = 160;                    // hairline between the halves
+const int STRIP_X = 5, STRIP_Y = 170, STRIP_W = 310, STRIP_H = 58;  // 170..227
+const int STRIP_ICON_CX = 44, STRIP_ICON_CY = 199, STRIP_ICON_SCALE = 15;
+const int STRIP_TEXT_X = 86;  // 147..162 city local time (was 140, overlapping)
 
 // === Backlight (PWM via LEDC on TFT_BL, see build_flags) ===
 const int BACKLIGHT_CHANNEL = 0;
@@ -27,7 +73,43 @@ const int BACKLIGHT_MAX_DUTY = 230;   // ~90%, not 255 — CYD's backlight regul
 const int BACKLIGHT_MIN_DUTY = 30;    // dim but still legible in a dark room
 const int BACKLIGHT_NIGHT_CEILING = 110; // cap even if the room is lit, during home-local night hours
 // LDR polarity varies by wiring revision — if brightness moves the wrong way on your board, flip this.
-const bool LDR_HIGHER_MEANS_BRIGHTER = true;
+// === Touch calibration (measured on this unit, rotation 1, 320x240) ===
+// Five-point fit; worst residual 6.3 px, axes aligned (no swap) and neither inverted.
+// Raw span seen: x 466..3437, y 618..3468. Re-run the calibration rig if the panel or
+// the rotation ever changes -- these are specific to THIS board.
+const float TOUCH_AX = 0.089410f, TOUCH_BX = -14.903f;  // screenX = AX*raw + BX
+const float TOUCH_AY = 0.064770f, TOUCH_BY = -13.698f;  // screenY = AY*raw + BY
+
+// === Ambient light sensor: R21, WORKS -- but only at 0 dB ADC attenuation ===
+// R21 on the silkscreen is an LDR (a photoresistor is a resistor, hence the R), part
+// GT36516, wired GPIO 34 -> GROUND with a pull-up divider to 3V3 (R15/R19, reported 1M
+// each; single-sourced, unconfirmed). Because it goes to ground, DARK READS HIGH.
+//
+// Measured on this board, backlight on at duty 220, covering vs uncovering R21:
+//     attenuation   covered(dark)   uncovered(lit)
+//     0 dB              2500              0
+//     2.5 dB            1952              0
+//     6 dB              1391              0
+//     11 dB              746              0
+// The whole signal lives between ~142 mV and ~740 mV. Arduino's DEFAULT 11 dB stretches
+// the ADC to ~2.5 V full scale, squashing that band into the bottom of the range; 0 dB
+// scales to ~1.1 V and fits it almost exactly. Same sensor, 3.3x the usable resolution,
+// which is why this pin looked dead until the attenuation was set explicitly.
+//
+// Known limits, accepted deliberately:
+//   * The bright end is compressed: anything from "lit room" upward reads 0, so this
+//     cannot tell a bright room from direct sunlight. It CAN tell dark from lit, which
+//     is the only distinction the night-dimming feature actually needs.
+//   * Backlight spill from the panel edge falls on R21, so the sensor partly sees the
+//     display it is controlling. Covering R21 still produced a strong response at duty
+//     220, so the loop is not saturated, and the existing /8 smoothing in
+//     updateBacklight() damps any oscillation. Watch for slow hunting in a dark room.
+//   * Soldering ~51k in parallel with R15 would decompress the bright end. Not needed
+//     for night dimming; revisit only if proportional daylight sensing is ever wanted.
+const bool LDR_PRESENT = true;
+const bool LDR_HIGHER_MEANS_BRIGHTER = false;  // LDR to GND: dark reads HIGH
+const int  LDR_RAW_DARK = 2500;   // measured reading when fully covered, at ADC_0db
+const int  BACKLIGHT_DEFAULT_DUTY = 200;  // used while no light sensor is available
 const unsigned long BRIGHTNESS_UPDATE_INTERVAL = 2000; // 2 sec
 
 // === Heap watchdog tuning ===
@@ -168,10 +250,19 @@ const unsigned long CLOCK_TICK_INTERVAL = 1000;   // 1 sec
 bool autoRotatePaused = false;
 bool showingDiagnostics = false;
 
+// Two full-screen layouts. They share no zones, so switching between them does a single
+// full fillScreen -- the per-zone erase discipline used within each layout cannot clean
+// up after the other one.
+enum ViewMode : uint8_t { VIEW_WEATHER = 0, VIEW_CLOCK = 1 };
+ViewMode currentView = VIEW_WEATHER;
+
 // --- Touch gesture tuning (raw XPT2046 units, 0-4095 range) ---
 const unsigned long LONG_PRESS_MS = 700;   // hold this long, without drifting, to toggle pause
-const int LONG_PRESS_MAX_DRIFT = 300;      // max |dx|+|dy| drift still counted as a long-press
-const int SWIPE_MIN_DELTA = 500;           // min horizontal travel to count as a swipe, not a tap
+// Both thresholds are in SCREEN PIXELS now that touch is calibrated -- they used to be
+// raw ADC counts. Converted with the fitted scale (0.0894 px/count on x): the old 300
+// and 500 raw correspond to ~25 px and ~45 px.
+const int LONG_PRESS_MAX_DRIFT = 25;       // max |dx|+|dy| drift still counted as a long-press
+const int SWIPE_MIN_DELTA = 45;            // min horizontal travel to count as a swipe, not a tap
 const unsigned long DOUBLE_TAP_WINDOW_MS = 400; // 2nd tap within this window opens diagnostics
 
 // === Weather code mapping (WMO codes) ===
@@ -194,9 +285,15 @@ const char* wmoToString(int code) {
 
 // === Backlight: LDR ambient reading + home-local night ceiling, smoothed ===
 int computeTargetBacklightDuty() {
-  int raw = analogRead(LDR_PIN);
-  float lightFrac = LDR_HIGHER_MEANS_BRIGHTER ? raw / 4095.0f : 1.0f - (raw / 4095.0f);
-  int duty = BACKLIGHT_MIN_DUTY + (int)(lightFrac * (BACKLIGHT_MAX_DUTY - BACKLIGHT_MIN_DUTY));
+  int duty = BACKLIGHT_DEFAULT_DUTY;
+  if (LDR_PRESENT) {
+    // Scale against the MEASURED dark reading, not the ADC's full 4095 span -- this
+    // sensor never gets near 4095, so using it would waste most of the range.
+    int raw = analogRead(LDR_PIN);
+    float darkFrac = constrain(raw / (float)LDR_RAW_DARK, 0.0f, 1.0f);
+    float lightFrac = LDR_HIGHER_MEANS_BRIGHTER ? darkFrac : 1.0f - darkFrac;
+    duty = BACKLIGHT_MIN_DUTY + (int)(lightFrac * (BACKLIGHT_MAX_DUTY - BACKLIGHT_MIN_DUTY));
+  }
 
   setTimezone(HOME_TZ);
   struct tm timeinfo;
@@ -594,10 +691,10 @@ void drawHomeClock(TFT_eSPI &d, bool eraseFirst) {
   } else {
     strcpy(timeStr, "--:--");
   }
-  if (eraseFirst) d.fillRect(160, 6, 148, 24, TFT_DARKCYAN);
+  if (eraseFirst) d.fillRect(HDR_CLOCK_X, HDR_Y + 1, HDR_CLOCK_W, HDR_H - 2, TFT_DARKCYAN);
   d.setTextColor(TFT_LIGHTGREY);
   d.setTextDatum(MR_DATUM);
-  d.drawString(timeStr, 300, 18, 2);
+  d.drawString(timeStr, HDR_CLOCK_R, HDR_Y + HDR_H / 2, 2);
 }
 
 void drawCityClock(TFT_eSPI &d, bool eraseFirst) {
@@ -609,10 +706,10 @@ void drawCityClock(TFT_eSPI &d, bool eraseFirst) {
   } else {
     strcpy(cityTimeStr, "--:--");
   }
-  if (eraseFirst) d.fillRect(170, 140, 100, 18, TFT_BLACK);
+  if (eraseFirst) d.fillRect(COL_X, CTIME_Y, COL_W, CTIME_H, TFT_BLACK);
   d.setTextColor(TFT_DARKCYAN);
   d.setTextDatum(TC_DATUM);
-  d.drawString(cityTimeStr, 220, 148, 2);
+  d.drawString(cityTimeStr, COL_CX, CTIME_Y, 2);
 }
 
 // === Draw the Weather Now screen (LANDSCAPE 320x240) ===
@@ -622,15 +719,55 @@ void drawCityClock(TFT_eSPI &d, bool eraseFirst) {
 // background so old content can't ghost through when new content is narrower.
 // The one exception is the weather icon, which gets its own small sprite
 // since it's built from many overlapping shapes rather than a solid rect.
+// Measure what the renderer ACTUALLY produces, rather than trusting estimates. Run once
+// at boot: if a new city name or a wordier condition string stops fitting its zone, this
+// says so on the serial log instead of silently overlapping something.
+void logLayoutMetrics() {
+  Serial.println("--- layout metrics (measured, px) ---");
+
+  tft.setFreeFont(&FreeSansBold12pt7b);
+  int titleW = tft.textWidth(HEADER_TITLE);
+  tft.setTextFont(2);   // GFXFF reset, see CLAUDE.md
+  int titleEnd = HDR_TITLE_X + titleW;
+  Serial.printf("  header \"%s\": %d wide, ends x=%d, clock box starts x=%d  %s\n",
+                HEADER_TITLE, titleW, titleEnd, HDR_CLOCK_X,
+                titleEnd < HDR_CLOCK_X ? "OK" : "*** COLLIDES ***");
+
+  int cw = 0; const char *cn = "";
+  for (int i = 0; i < NUM_CITIES; i++) {
+    int w = tft.textWidth(cities[i].name, 2);
+    if (w > cw) { cw = w; cn = cities[i].name; }
+  }
+  Serial.printf("  widest city \"%s\": %d wide, column is %d  %s\n",
+                cn, cw, COL_W, cw <= COL_W ? "OK" : "*** OVERFLOWS ***");
+
+  // The longest condition string the WMO ladder can produce.
+  int dw = tft.textWidth("Thunderstorm", 4);
+  Serial.printf("  longest condition \"Thunderstorm\": %d wide, column is %d  %s\n",
+                dw, COL_W, dw <= COL_W ? "OK" : "*** OVERFLOWS ***");
+
+  int hw = tft.textWidth("07:42 PM  Sep 18", 2);
+  Serial.printf("  header clock sample: %d wide, box is %d  %s\n",
+                hw, HDR_CLOCK_W, hw <= HDR_CLOCK_W ? "OK" : "*** OVERFLOWS ***");
+  Serial.println("  bands: temp 44-102  desc 103-128  city 130-145  ctime 147-162");
+
+  int bigW = tft.textWidth("07:42", 8);
+  int dateW = tft.textWidth("Wednesday, Sep 18", 4);
+  Serial.printf("  clock view: big time \"07:42\" %d wide (screen 320)  %s\n",
+                bigW, bigW <= 300 ? "OK" : "*** TOO WIDE ***");
+  Serial.printf("  clock view: longest date \"Wednesday, Sep 18\" %d wide  %s\n",
+                dateW, dateW <= 316 ? "OK" : "*** TOO WIDE ***");
+}
+
 void drawWeatherScreen() {
   TFT_eSPI &d = tft;
 
   // --- Title bar --- (anti-aliased free font; see GFXFF note in CLAUDE.md)
-  d.fillRoundRect(5, 5, 310, 26, 4, TFT_DARKCYAN);
+  d.fillRoundRect(HDR_X, HDR_Y, HDR_W, HDR_H, 4, TFT_DARKCYAN);
   d.setTextColor(TFT_WHITE, TFT_DARKCYAN);
   d.setTextDatum(ML_DATUM);
   d.setFreeFont(&FreeSansBold12pt7b);
-  d.drawString("WEATHER NOW", 12, 20);
+  d.drawString(HEADER_TITLE, HDR_TITLE_X, HDR_Y + HDR_H / 2);
   d.setTextFont(2); // back to classic numbered fonts for the rest of the screen
 
   // --- Home time and date (right side of title bar) ---
@@ -656,21 +793,24 @@ void drawWeatherScreen() {
   }
 
   // --- Temperature zone (moved up) --- anti-aliased free font (see GFXFF note in CLAUDE.md)
+  d.fillRect(COL_X, TEMP_Y, COL_W, TEMP_H, TFT_BLACK);
   d.setTextColor(TFT_WHITE, TFT_BLACK);
   d.setTextDatum(TC_DATUM);
   d.setFreeFont(&FreeSansBold24pt7b);
-  d.drawString(weatherTemp, 220, 55);
+  d.drawString(weatherTemp, COL_CX, TEMP_Y + 11);
   d.setTextFont(2); // back to classic numbered fonts for the rest of the screen
 
   // --- Description zone (moved up) --- opaque bg so a shorter string erases the old one.
   // Amber instead of cyan when the reading failed, so an error state is distinguishable
   // at a glance from a real forecast rather than reading like just another condition.
+  d.fillRect(COL_X, DESC_Y, COL_W, DESC_H, TFT_BLACK);
   d.setTextColor(weatherDataValid ? TFT_CYAN : TFT_ORANGE, TFT_BLACK);
-  d.drawString(weatherDesc, 220, 103, 4);
+  d.drawString(weatherDesc, COL_CX, DESC_Y, 4);
 
   // --- City zone --- opaque bg for the same reason
+  d.fillRect(COL_X, CITY_Y, COL_W, CITY_H, TFT_BLACK);
   d.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
-  d.drawString(cities[currentCityIndex].name, 220, 130, 2);
+  d.drawString(cities[currentCityIndex].name, COL_CX, CITY_Y, 2);
 
   // --- City local time (below city name) ---
   drawCityClock(d, true);
@@ -694,7 +834,115 @@ void drawWeatherScreen() {
   // --- Footer (tight to bar) --- static text, never changes width, but opaque anyway
   d.setTextColor(TFT_GREEN, TFT_BLACK);
   d.setTextDatum(TC_DATUM);
-  d.drawString("Tap next | Swipe back | Hold pause", 160, 213, 1);
+  d.drawString("Tap next | Swipe up: clock | Hold: pause", 160, 213, 1);
+}
+
+// === Alternate view: big clock over a condensed weather strip ===
+// Roughly a 70/30 vertical split. The point of this view is glanceability from across a
+// room, so the time gets Font 8 (75px) and everything else is deliberately secondary.
+void drawBigClock(TFT_eSPI &d, bool eraseFirst) {
+  setTimezone(HOME_TZ);
+  struct tm ti;
+  char hhmm[8], ampm[6], datestr[28];
+  if (getLocalTime(&ti, 100)) {
+    strftime(hhmm,    sizeof(hhmm),    "%I:%M", &ti);
+    strftime(ampm,    sizeof(ampm),    "%p", &ti);
+    strftime(datestr, sizeof(datestr), "%A, %b %d", &ti);
+  } else {
+    strlcpy(hhmm, "--:--", sizeof(hhmm));
+    ampm[0] = '\0';
+    strlcpy(datestr, "no time sync yet", sizeof(datestr));
+  }
+
+  if (eraseFirst) {
+    d.fillRect(0, CLK_TIME_Y, 320, CLK_TIME_H, TFT_BLACK);
+    d.fillRect(0, CLK_DATE_Y, 320, CLK_DATE_H, TFT_BLACK);
+  }
+
+  // Nudged left of centre so the AM/PM tag sits beside the digits without pushing the
+  // whole block off-centre. Font 8 has no letters, hence the separate draw.
+  int tw = d.textWidth(hhmm, 8);
+  int cx = 160 - 14;
+  d.setTextColor(TFT_WHITE, TFT_BLACK);
+  d.setTextDatum(TC_DATUM);
+  d.drawString(hhmm, cx, CLK_TIME_Y, 8);
+
+  if (ampm[0]) {
+    d.setTextColor(TFT_DARKCYAN, TFT_BLACK);
+    d.setTextDatum(BL_DATUM);
+    d.drawString(ampm, cx + tw / 2 + 10, CLK_TIME_Y + CLK_TIME_H - 12, 4);
+  }
+
+  d.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+  d.setTextDatum(TC_DATUM);
+  d.drawString(datestr, 160, CLK_DATE_Y, 4);
+}
+
+// The strip repaints its whole rounded rect every time, so unlike the main view there is
+// no per-zone erase to get wrong and no way for a previous city's text to survive.
+void drawClockWeatherStrip(TFT_eSPI &d) {
+  const uint16_t bg = d.color565(18, 18, 26);
+  d.fillRoundRect(STRIP_X, STRIP_Y, STRIP_W, STRIP_H, 5, bg);
+
+  drawWeatherIcon(d, STRIP_ICON_CX, STRIP_ICON_CY, STRIP_ICON_SCALE,
+                  weatherCodeInt, isCurrentCityNight());
+
+  d.setTextDatum(ML_DATUM);
+  d.setTextColor(TFT_WHITE, bg);
+  d.setFreeFont(&FreeSansBold12pt7b);
+  d.drawString(weatherTemp, STRIP_TEXT_X, STRIP_Y + 18);
+  d.setTextFont(2);   // GFXFF reset, see CLAUDE.md
+
+  d.setTextColor(weatherDataValid ? TFT_CYAN : TFT_ORANGE, bg);
+  d.drawString(weatherDesc, STRIP_TEXT_X + 72, STRIP_Y + 18, 2);
+
+  d.setTextColor(TFT_LIGHTGREY, bg);
+  d.drawString(cities[currentCityIndex].name, STRIP_TEXT_X, STRIP_Y + 42, 2);
+
+  d.setTextDatum(MR_DATUM);
+  d.setTextColor(autoRotatePaused ? TFT_ORANGE : TFT_YELLOW, bg);
+  d.drawString(autoRotatePaused ? "Paused" : "Auto 10s", STRIP_X + STRIP_W - 26, STRIP_Y + 42, 2);
+
+  d.fillCircle(STRIP_X + STRIP_W - 13, STRIP_Y + 42, 4, wifiConnected ? TFT_GREEN : TFT_RED);
+}
+
+void drawClockScreen() {
+  TFT_eSPI &d = tft;
+  drawBigClock(d, true);
+  d.drawFastHLine(24, CLK_SEP_Y, 272, TFT_DARKGREY);
+  drawClockWeatherStrip(d);
+  d.setTextColor(TFT_DARKGREY, TFT_BLACK);
+  d.setTextDatum(TC_DATUM);
+  d.drawString("Swipe up/down for full weather", 160, 230, 1);
+}
+
+// Single dispatch point so gesture and timer code never has to know which view is up.
+// Three redraw entry points, and picking the wrong one is how the clock view ended up
+// with the full weather screen painted across it. Use:
+//   drawCurrentView()      - the whole panel needs repainting (view switch, overlay
+//                            dismissed, first draw)
+//   redrawWeatherContent() - the weather DATA changed (new city, fresh fetch)
+//   redrawWifiIndicator()  - only the connection dot changed
+// Never call drawWeatherScreen() or drawWifiStatusDot() directly from loop() or the
+// gesture handler: both draw at the weather view's coordinates unconditionally, so in
+// the clock view they land on top of whatever is already there.
+void drawCurrentView() {
+  if (currentView == VIEW_CLOCK) drawClockScreen();
+  else                           drawWeatherScreen();
+}
+
+// Only the strip carries weather in the clock view. Repainting the big clock here too
+// would make the time visibly blink on every city change -- every 10s with auto-rotate.
+void redrawWeatherContent() {
+  if (currentView == VIEW_CLOCK) drawClockWeatherStrip(tft);
+  else                           drawWeatherScreen();
+}
+
+// The status dot sits at different coordinates in each layout, so repaint whichever
+// element actually owns it.
+void redrawWifiIndicator() {
+  if (currentView == VIEW_CLOCK) drawClockWeatherStrip(tft);
+  else                           drawWifiStatusDot(tft);
 }
 
 // === Diagnostics overlay (double-tap to open, any tap to dismiss) ===
@@ -708,7 +956,7 @@ void drawDiagnosticsScreen() {
   TFT_eSPI &d = tft;
 
   d.fillScreen(TFT_BLACK);
-  d.fillRoundRect(5, 5, 310, 26, 4, TFT_DARKCYAN);
+  d.fillRoundRect(HDR_X, HDR_Y, HDR_W, HDR_H, 4, TFT_DARKCYAN);
   d.setTextColor(TFT_WHITE, TFT_DARKCYAN);
   d.setTextDatum(ML_DATUM);
   d.setFreeFont(&FreeSansBold12pt7b);
@@ -780,14 +1028,24 @@ void setup() {
   
   tft.init();
   tft.setRotation(1);
+  logLayoutMetrics();
   tft.fillScreen(TFT_BLACK);
 
   // Take over the backlight pin with PWM (tft.init() already set it digitally HIGH via
   // TFT_BACKLIGHT_ON) so brightness can be modulated instead of only on/off.
   ledcSetup(BACKLIGHT_CHANNEL, BACKLIGHT_FREQ, BACKLIGHT_RES_BITS);
+  // 0 dB (~1.1V full scale) rather than the 11 dB default -- see the LDR notes above.
+  // Without this the sensor's entire range collapses into a handful of ADC counts.
+  analogSetPinAttenuation(LDR_PIN, ADC_0db);
+
   ledcAttachPin(TFT_BL, BACKLIGHT_CHANNEL);
   ledcWrite(BACKLIGHT_CHANNEL, currentBacklightDuty);
 
+  // XPT2046_Touchscreen::begin() calls a bare SPI.begin(), which would claim VSPI's
+  // DEFAULT pins -- where the touch chip is not wired. ESP32's SPIClass::begin() returns
+  // early when the bus is already initialised, so re-pinning the global SPI object to
+  // the touch controller's real pins FIRST makes the library adopt them.
+  SPI.begin(TOUCH_SCK, TOUCH_MISO, TOUCH_MOSI, TOUCH_CS);
   ts.begin();
   ts.setRotation(1);
 
@@ -842,7 +1100,7 @@ void setup() {
   lastWeatherUpdate = millis();
   lastCitySwitch = millis();
   lastClockTick = millis();
-  drawWeatherScreen();
+  drawCurrentView();
 }
 
 void loop() {
@@ -862,10 +1120,12 @@ void loop() {
   if (ts.tirqTouched()) {
     if (ts.touched()) {
       TS_Point p = ts.getPoint();
-      if (p.z > 200 && p.x > 200 && p.y > 200 && p.x < 3900 && p.y < 3900) {
+      // Gate on pressure and a loose raw sanity range, then convert to screen pixels
+      // so every gesture threshold below is expressed in the same units as the UI.
+      if (p.z > 200 && p.x > 100 && p.y > 100 && p.x < 4000 && p.y < 4000) {
         touchNow = true;
-        curX = p.x;
-        curY = p.y;
+        curX = constrain((int)lroundf(TOUCH_AX * p.x + TOUCH_BX), 0, 319);
+        curY = constrain((int)lroundf(TOUCH_AY * p.y + TOUCH_BY), 0, 239);
       }
     }
   }
@@ -889,12 +1149,14 @@ void loop() {
       if (showingDiagnostics) {
         showingDiagnostics = false;
         lastClockTick = millis();
-        drawWeatherScreen();
+        drawCurrentView();
         Serial.println("Long-press -> dismissed diagnostics overlay");
       } else {
         autoRotatePaused = !autoRotatePaused;
         lastCitySwitch = millis(); // don't let a stale window instantly resume-then-switch
-        drawWeatherScreen();
+        // Only the Paused/Auto label changed, and that lives in the weather content of
+        // both layouts -- no need to repaint the big clock and make it blink.
+        redrawWeatherContent();
         Serial.println(autoRotatePaused ? "Long-press -> auto-rotate paused" : "Long-press -> auto-rotate resumed");
       }
     }
@@ -907,12 +1169,19 @@ void loop() {
     int dx = lastTouchX - touchStartX;
     int dy = lastTouchY - touchStartY;
 
+    // Touch is the flakiest subsystem on this board, and a gesture that fails to
+    // classify is otherwise completely silent. One line per release is cheap and makes
+    // "nothing happened" diagnosable: it shows whether the press was seen at all, how
+    // long it was held, and how far it travelled in each axis.
+    Serial.printf("touch release: held=%lums dx=%d dy=%d (swipe needs |d|>%d and 2x the other axis; tap window %lu-%lums)\n",
+                  heldFor, dx, dy, SWIPE_MIN_DELTA, 50UL, LONG_PRESS_MS);
+
     if (!longPressFired && heldFor > 50 && heldFor < LONG_PRESS_MS) {
       if (showingDiagnostics) {
         // Any tap/swipe dismisses the overlay back to the weather screen.
         showingDiagnostics = false;
         lastClockTick = releaseTime;
-        drawWeatherScreen();
+        drawCurrentView();
         Serial.println("Dismissed diagnostics overlay");
       } else if (abs(dx) > SWIPE_MIN_DELTA && abs(dx) > abs(dy) * 2) {
         // Horizontal swipe = previous city. Sign follows the same raw-coordinate
@@ -924,8 +1193,18 @@ void loop() {
         lastWeatherUpdate = millis();
         lastCitySwitch = millis();
         lastClockTick = millis();
-        drawWeatherScreen();
+        redrawWeatherContent();
         Serial.printf("Swipe -> switched to: %s\n", cities[currentCityIndex].name);
+      } else if (abs(dy) > SWIPE_MIN_DELTA && abs(dy) > abs(dx) * 2) {
+        // Vertical swipe = toggle view. Mutually exclusive with the horizontal test
+        // above: each requires its axis to dominate the other by 2x, so a sloppy
+        // diagonal simply falls through and is treated as a tap.
+        currentView = (currentView == VIEW_WEATHER) ? VIEW_CLOCK : VIEW_WEATHER;
+        tft.fillScreen(TFT_BLACK);   // the layouts share no zones; wipe once on switch
+        lastClockTick = millis();
+        drawCurrentView();
+        Serial.printf("Swipe %s -> %s view\n", dy > 0 ? "down" : "up",
+                      currentView == VIEW_CLOCK ? "CLOCK" : "WEATHER");
       } else if (releaseTime - lastTapTime < DOUBLE_TAP_WINDOW_MS) {
         // Double-tap = diagnostics overlay (the first tap already advanced
         // the city as a normal single tap; this just replaces the 2nd advance).
@@ -941,7 +1220,7 @@ void loop() {
         lastWeatherUpdate = millis();
         lastCitySwitch = millis();
         lastClockTick = millis();
-        drawWeatherScreen();
+        redrawWeatherContent();
         Serial.printf("Tap -> switched to: %s\n", cities[currentCityIndex].name);
       }
     }
@@ -954,7 +1233,7 @@ void loop() {
     bool nowConnected = (WiFi.status() == WL_CONNECTED);
     if (nowConnected != wifiConnected) {
       wifiConnected = nowConnected;
-      if (!showingDiagnostics) drawWifiStatusDot(tft);
+      if (!showingDiagnostics) redrawWifiIndicator();
       Serial.println(wifiConnected ? "WiFi reconnected" : "WiFi dropped");
     }
     if (!nowConnected) {
@@ -977,8 +1256,12 @@ void loop() {
   // --- Per-second clock tick (small direct redraw, no full-screen sprite) ---
   if (!showingDiagnostics && millis() - lastClockTick > CLOCK_TICK_INTERVAL) {
     lastClockTick = millis();
-    drawHomeClock(tft, true);
-    drawCityClock(tft, true);
+    if (currentView == VIEW_CLOCK) {
+      drawBigClock(tft, true);
+    } else {
+      drawHomeClock(tft, true);
+      drawCityClock(tft, true);
+    }
   }
 
   // --- Auto-switch city every 10 seconds (unless paused or viewing diagnostics) ---
@@ -988,7 +1271,7 @@ void loop() {
     lastWeatherUpdate = millis();
     lastCitySwitch = millis();
     lastClockTick = millis();
-    drawWeatherScreen();
+    redrawWeatherContent();
     Serial.printf("Auto-switch -> %s\n", cities[currentCityIndex].name);
   }
   
