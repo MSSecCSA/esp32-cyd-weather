@@ -34,6 +34,8 @@ While the portal is up the radio is in `WIFI_AP_STA`, so it can test-connect wit
 
 **Scan before raising the AP.** `runProvisioningPortal()` scans while still a plain station, then brings up the AP. In `AP_STA` the radio time-shares between hosting and scanning, so scanning right after the AP starts returns a badly truncated list. Note the ESP32 is 2.4GHz-only — a mostly-5GHz house will legitimately show very few networks, and the device never lists its own AP.
 
+**Everything interpolated into the portal page is HTML-escaped** (`htmlEscape()`). This is not theoretical tidiness: `refreshScan()` renders `WiFi.SSID(i)` into an `<option value="...">`, and SSIDs are controlled by **anyone within radio range** — a neighbour can name their network `"><script>...` and have it execute on the page where you type your WiFi password, without ever joining the setup AP. The echoes of the submitted SSID are lower risk (they need AP access) but take the same fix. `portalStatus` is deliberately stored as *plain* text because the TFT also draws it, and escaped only at HTML render time.
+
 **The setup AP is deliberately open** (`AP_PASSWORD = nullptr`). Considered trade-off: easier to join, but anyone in range during the setup window can connect and could observe the WiFi password being submitted, which crosses that link over plain HTTP. The window closes the moment provisioning succeeds. Pass a password to `softAP()` if that is not acceptable.
 
 `.gitignore` still lists `include/secrets.h` defensively; nothing reads it. Delete any local copy you still have — it is dead weight now.

@@ -1150,6 +1150,8 @@ String scanCache;               // pre-rendered <option> list, so page loads are
 volatile bool testRequested = false;
 String testSsid, testPass;
 
+String htmlEscape(const String &in);   // defined below, used by the scan renderer
+
 bool loadWifiCreds() {
   wifiPrefs.begin("wifi", true);            // read-only
   staSsid = wifiPrefs.getString("ssid", "");
@@ -1189,11 +1191,15 @@ void refreshScan() {
   Serial.println("wifi: scanning...");
   int n = WiFi.scanNetworks();
   scanCache = "";
+  String seen;                     // raw names, \x01-delimited: dedup must not depend on
+                                   // the escaped form, which varies with the content
   for (int i = 0; i < n; i++) {
     String ss = WiFi.SSID(i);
     if (ss.length() == 0) continue;
-    if (scanCache.indexOf(">" + ss + "<") >= 0) continue;   // already listed
-    scanCache += "<option value=\"" + ss + "\">" + ss +
+    if (seen.indexOf("\x01" + ss + "\x01") >= 0) continue;
+    seen += "\x01" + ss + "\x01";
+    String esc = htmlEscape(ss);   // once for the attribute, once for the visible text
+    scanCache += "<option value=\"" + esc + "\">" + esc +
                  "  (" + String(WiFi.RSSI(i)) + " dBm" +
                  (WiFi.encryptionType(i) == WIFI_AUTH_OPEN ? ", open" : "") + ")</option>";
   }
@@ -1247,6 +1253,28 @@ void drawPortalScreen(const String &status) {
   }
 }
 
+// Everything interpolated into the portal page goes through this. SSIDs are the case
+// that matters: they are attacker-controlled by anyone within radio range, so a
+// neighbour can name their network "><script>... and have it land in the page where you
+// type your WiFi password -- no access to the setup AP required. The submitted-SSID
+// echoes are lower risk (they need AP access) but are the same one-line fix.
+String htmlEscape(const String &in) {
+  String out;
+  out.reserve(in.length() + 16);
+  for (unsigned int i = 0; i < in.length(); i++) {
+    char c = in.charAt(i);
+    switch (c) {
+      case '&':  out += F("&amp;");  break;
+      case '<':  out += F("&lt;");   break;
+      case '>':  out += F("&gt;");   break;
+      case '"':  out += F("&quot;"); break;
+      case '\'': out += F("&#39;");  break;
+      default:   out += c;
+    }
+  }
+  return out;
+}
+
 // --- portal HTTP ----------------------------------------------------------------------
 String portalPage() {
   String h = F("<!doctype html><meta name=viewport content='width=device-width,initial-scale=1'>"
@@ -1261,7 +1289,8 @@ String portalPage() {
                "a{color:#e8b93f;font-size:14px;display:inline-block;margin-top:16px;}"
                ".s{margin:16px 0;padding:12px;border-left:3px solid #e8b93f;background:#2c2718;font-size:14px;}"
                "</style><h1>CYD Weather Station</h1><p>Choose your WiFi network.</p>");
-  if (portalStatus.length()) h += "<div class=s>" + portalStatus + "</div>";
+  // portalStatus is kept as plain text because the TFT also draws it; escape here.
+  if (portalStatus.length()) h += "<div class=s>" + htmlEscape(portalStatus) + "</div>";
   h += F("<form method=POST action=/save><label>Network</label><select name=ssid>");
   h += scanCache.length() ? scanCache : String(F("<option value=''>-- no networks found --</option>"));
   h += F("</select><label>Password</label>"
@@ -1293,7 +1322,7 @@ void handleSave() {
   portalServer.send(200, "text/html",
     "<!doctype html><meta name=viewport content='width=device-width,initial-scale=1'>"
     "<style>body{font-family:system-ui,sans-serif;background:#14140e;color:#f3f0e3;padding:24px;}"
-    "a{color:#e8b93f;}</style><h2>Testing \"" + testSsid + "\"...</h2>"
+    "a{color:#e8b93f;}</style><h2>Testing \"" + htmlEscape(testSsid) + "\"...</h2>"
     "<p>Watch the display. If it works the device restarts into the weather screen and "
     "this network disappears. If it fails, rejoin and <a href=/>try again</a>.</p>");
   testRequested = true;
