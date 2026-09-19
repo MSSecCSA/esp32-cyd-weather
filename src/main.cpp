@@ -676,6 +676,101 @@ void fetchWeather(int cityIdx) {
 }
 
 // === WiFi status dot (lower right of info bar) — redrawable standalone ===
+
+// === Ambient RGB LED (GPIO 4 / 16 / 17, active-LOW) ===
+// Verified on hardware 2026-09-18: driving a channel LOW lights it, and the mapping is
+// red=4, green=16, blue=17.
+//
+// The animation walks a ring of colour stops with an ease-in-out between them, so each
+// colour brightens, peaks, and ebbs into the next rather than switching:
+//     black -> red -> green -> blue -> white -> black -> (held dark) -> repeat
+// One full ring is LED_SEGMENT_MS * LED_RING_LEN, i.e. 30s by default.
+//
+// TIMER HAZARD: Arduino's ledcSetup() assigns timer (channel/2)%4, so channels 0 and 1
+// SHARE a timer. The backlight owns channel 0 at 8-bit resolution -- putting a 12-bit
+// channel on 1 would silently re-resolution the backlight and drive the panel almost
+// black. These use channels 2, 3 and 4 (timers 1, 1, 2), clear of it. Check this before
+// adding any further LEDC channel.
+const bool AMBIENT_LED_ENABLED = true;
+const int LED_R_PIN = 4, LED_G_PIN = 16, LED_B_PIN = 17;
+const int LED_CH_R = 2, LED_CH_G = 3, LED_CH_B = 4;
+const int LED_PWM_FREQ = 5000;
+const int LED_PWM_BITS = 12;                        // 4096 levels, so the dim end of a
+const int LED_PWM_MAX  = (1 << LED_PWM_BITS) - 1;   // gamma ramp does not visibly step
+const unsigned long LED_SEGMENT_MS = 5000;          // per hand-off
+const float LED_BRIGHTNESS = 0.55f;                 // ceiling; this LED is harsh at full
+// Track the panel's own brightness so a dark room (or the night ceiling) dims the LED
+// too -- the same reasoning that gives the backlight a night cap at a bedside.
+const bool LED_TRACKS_BACKLIGHT = true;
+
+struct LedStop { uint8_t r, g, b; };
+const LedStop LED_RING[] = {
+  {  0,   0,   0},   // rest
+  {255,   0,   0},   // red
+  {  0, 255,   0},   // green
+  {  0,   0, 255},   // blue
+  {255, 255, 255},   // white
+  {  0,   0,   0},   // dark again; the ring then wraps black->black as a held pause
+};
+const int LED_RING_LEN = sizeof(LED_RING) / sizeof(LED_RING[0]);
+
+// Perceived brightness is roughly the 2.2 power of duty, so a linear ramp appears to
+// rush the bright end and crawl the dark end. Correcting it is what makes the fade read
+// as even rather than as a snap followed by a drift.
+static void ledWriteChannel(int ch, float level01) {
+  if (level01 < 0.0f) level01 = 0.0f;
+  if (level01 > 1.0f) level01 = 1.0f;
+  uint32_t duty = (uint32_t)(powf(level01, 2.2f) * LED_PWM_MAX + 0.5f);
+  ledcWrite(ch, LED_PWM_MAX - duty);   // active-LOW: inverted on the way out
+}
+
+// Runs as its own task rather than from loop(), which ends in delay(100) and so could
+// only update at 10Hz -- visibly steppy on a slow fade. Shortening that delay would mean
+// re-tuning gesture timing that is already confirmed working, so the animation gets its
+// own 50Hz cadence and loop() is left alone.
+void ambientLedTask(void *) {
+  const TickType_t period = pdMS_TO_TICKS(20);
+  const unsigned long ringMs = LED_SEGMENT_MS * (unsigned long)LED_RING_LEN;
+  for (;;) {
+    unsigned long pos = millis() % ringMs;
+    int seg = (int)(pos / LED_SEGMENT_MS);
+    float t = (float)(pos % LED_SEGMENT_MS) / (float)LED_SEGMENT_MS;
+    float e = t * t * (3.0f - 2.0f * t);   // smoothstep: eases out of one stop and into
+                                           // the next, so there is no visible corner
+    const LedStop &a = LED_RING[seg];
+    const LedStop &b = LED_RING[(seg + 1) % LED_RING_LEN];
+
+    float scale = LED_BRIGHTNESS;
+    if (LED_TRACKS_BACKLIGHT) {
+      scale *= (float)currentBacklightDuty / (float)BACKLIGHT_MAX_DUTY;
+    }
+
+    ledWriteChannel(LED_CH_R, ((float)a.r + ((float)b.r - (float)a.r) * e) / 255.0f * scale);
+    ledWriteChannel(LED_CH_G, ((float)a.g + ((float)b.g - (float)a.g) * e) / 255.0f * scale);
+    ledWriteChannel(LED_CH_B, ((float)a.b + ((float)b.b - (float)a.b) * e) / 255.0f * scale);
+
+    vTaskDelay(period);
+  }
+}
+
+void setupAmbientLed() {
+  if (!AMBIENT_LED_ENABLED) return;
+  ledcSetup(LED_CH_R, LED_PWM_FREQ, LED_PWM_BITS);
+  ledcSetup(LED_CH_G, LED_PWM_FREQ, LED_PWM_BITS);
+  ledcSetup(LED_CH_B, LED_PWM_FREQ, LED_PWM_BITS);
+  ledcAttachPin(LED_R_PIN, LED_CH_R);
+  ledcAttachPin(LED_G_PIN, LED_CH_G);
+  ledcAttachPin(LED_B_PIN, LED_CH_B);
+  ledWriteChannel(LED_CH_R, 0.0f);
+  ledWriteChannel(LED_CH_G, 0.0f);
+  ledWriteChannel(LED_CH_B, 0.0f);
+  // powf() plus the float maths wants more than the 2048 a trivial task would take.
+  xTaskCreatePinnedToCore(ambientLedTask, "ambientLed", 3072, nullptr, 1, nullptr, 1);
+  Serial.printf("ambient LED: ring of %d stops, %lums per hand-off (%lus full cycle)\n",
+                LED_RING_LEN, LED_SEGMENT_MS,
+                (LED_SEGMENT_MS * (unsigned long)LED_RING_LEN) / 1000UL);
+}
+
 void drawWifiStatusDot(TFT_eSPI &d) {
   d.fillCircle(305, 187, 4, wifiConnected ? TFT_GREEN : TFT_RED);
 }
@@ -1040,6 +1135,9 @@ void setup() {
 
   ledcAttachPin(TFT_BL, BACKLIGHT_CHANNEL);
   ledcWrite(BACKLIGHT_CHANNEL, currentBacklightDuty);
+
+  // After the backlight, so LED_TRACKS_BACKLIGHT has a real value to scale against.
+  setupAmbientLed();
 
   // XPT2046_Touchscreen::begin() calls a bare SPI.begin(), which would claim VSPI's
   // DEFAULT pins -- where the touch chip is not wired. ESP32's SPIClass::begin() returns
