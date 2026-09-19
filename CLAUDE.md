@@ -20,9 +20,25 @@ If `pio` isn't on PATH, it may still be installed as a Python package — check 
 
 There is no test suite or linter in this repo — it's single-target embedded firmware (`env:esp32dev`), verified by building/flashing and watching serial output.
 
-## Secrets
+## Credentials
 
-WiFi credentials live in `include/secrets.h` (gitignored, real values) with `include/secrets.h.example` checked in as the template. `main.cpp` does `#include "secrets.h"` and expects it to `#define WIFI_SSID` / `WIFI_PASS`. When setting up a fresh checkout, copy the example file and fill in real values before building — the build fails without it. Never edit `secrets.h` in a way that would land credentials back in tracked history (e.g. don't `git add -f` it).
+**WiFi credentials live in NVS, not in the firmware.** There is nothing compiled in to leak — `secrets.h` and `secrets.h.example` are gone, and `src/main.cpp` no longer references `WIFI_SSID`/`WIFI_PASS`. A fresh board, or one whose stored network cannot be joined, raises a setup AP and asks.
+
+Boot path, in `wifiStartup()`:
+
+1. Credentials in NVS? Try to associate, 20s timeout.
+2. Failed, or nothing stored → scan, work out **whether the stored SSID is even present**, and report which it was: *"Previous network X not found"* vs *"Could not join X. Password may have changed."*
+3. Raise `CYD-Setup-XXXX` (last two MAC bytes) and block until the device is online.
+
+While the portal is up the radio is in `WIFI_AP_STA`, so it can test-connect without dropping the phone configuring it. If credentials are stored, the portal **retries them every 60s** — a router that was merely rebooting recovers on its own rather than leaving the display in setup mode until someone notices.
+
+**Scan before raising the AP.** `runProvisioningPortal()` scans while still a plain station, then brings up the AP. In `AP_STA` the radio time-shares between hosting and scanning, so scanning right after the AP starts returns a badly truncated list. Note the ESP32 is 2.4GHz-only — a mostly-5GHz house will legitimately show very few networks, and the device never lists its own AP.
+
+**The setup AP is deliberately open** (`AP_PASSWORD = nullptr`). Considered trade-off: easier to join, but anyone in range during the setup window can connect and could observe the WiFi password being submitted, which crosses that link over plain HTTP. The window closes the moment provisioning succeeds. Pass a password to `softAP()` if that is not acceptable.
+
+`.gitignore` still lists `include/secrets.h` defensively; nothing reads it. Delete any local copy you still have — it is dead weight now.
+
+**To re-provision**, erase the NVS namespace (or the flash region) and reboot; the portal comes back up.
 
 ## Hardware: evidence ledger
 

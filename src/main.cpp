@@ -4,12 +4,14 @@
 #include <ArduinoJson.h>
 #include <TFT_eSPI.h>
 #include <SPI.h>   // used directly: the touch bus is re-pinned before ts.begin()
+#include <WebServer.h>
+#include <DNSServer.h>
+#include <Preferences.h>
 #include <XPT2046_Touchscreen.h>
 #include <math.h>
 #include <esp_heap_caps.h>
 #include <esp_system.h>
 #include <rom/rtc.h>
-#include "secrets.h"  // defines WIFI_SSID / WIFI_PASS — gitignored, see secrets.h.example
 // FreeSansBold24pt7b/FreeSansBold12pt7b (used below) come from TFT_eSPI's own
 // Fonts/GFXFF/gfxfont.h, which unconditionally bundles all 44 GFXFF free fonts
 // whenever LOAD_GFXFF is defined — do not #include them again here, it redefines
@@ -1103,6 +1105,298 @@ void drawDiagnosticsScreen() {
 }
 
 // === Draw boot/connecting screen ===
+
+// ============================================================================
+// WiFi credentials + first-run provisioning portal
+// ============================================================================
+// Credentials live in NVS, NOT in the firmware binary. secrets.h is gone: there is
+// nothing compiled in to leak into a repository, and a fresh board simply asks.
+//
+// Boot flow:
+//   stored credentials?  -> try to connect (20s)
+//     connected          -> normal operation
+//     failed             -> scan, report whether the stored SSID is even present,
+//                           then raise the setup AP
+//   nothing stored       -> raise the setup AP straight away
+//
+// While the portal is up the radio runs in AP_STA mode, so the device can scan and
+// test-connect without dropping the phone or laptop that is configuring it. If stored
+// credentials exist, the portal also retries them every 60s -- that covers the common
+// case of the house router simply having been rebooting, and the display recovers on
+// its own instead of sitting in setup mode until someone notices.
+//
+// The setup AP is deliberately OPEN. That is a considered trade-off, not an oversight:
+// joining is easier, but anyone in range during the setup window can join and could
+// observe the WiFi password being submitted, which crosses the link over plain HTTP.
+// The window is short and ends the moment provisioning succeeds. Give the AP a WPA2
+// password (softAP(ssid, pass)) if that trade is not acceptable in your environment.
+//
+// String is used freely in this section. That does not contradict the no-String rule in
+// CLAUDE.md, which is about the fetch/render path that repeats every 10s forever -- this
+// code runs once at boot and then never again.
+
+const char *AP_PASSWORD = nullptr;          // nullptr = open network, see note above
+const unsigned long STA_CONNECT_TIMEOUT_MS = 20000;
+const unsigned long PORTAL_RETRY_STORED_MS = 60000;
+
+Preferences wifiPrefs;
+WebServer portalServer(80);
+DNSServer portalDns;
+
+String staSsid, staPass;        // the credentials we are using / testing
+String apName;                  // "CYD-Setup-A1B2", derived from the MAC
+String portalStatus;            // last result, shown on the portal page and the TFT
+String scanCache;               // pre-rendered <option> list, so page loads are instant
+volatile bool testRequested = false;
+String testSsid, testPass;
+
+bool loadWifiCreds() {
+  wifiPrefs.begin("wifi", true);            // read-only
+  staSsid = wifiPrefs.getString("ssid", "");
+  staPass = wifiPrefs.getString("pass", "");
+  wifiPrefs.end();
+  return staSsid.length() > 0;
+}
+
+void saveWifiCreds(const String &ssid, const String &pass) {
+  wifiPrefs.begin("wifi", false);
+  wifiPrefs.putString("ssid", ssid);
+  wifiPrefs.putString("pass", pass);
+  wifiPrefs.end();
+  Serial.printf("wifi: credentials stored for \"%s\"\n", ssid.c_str());
+}
+
+// Attempt an association and wait for it. Returns as soon as it succeeds rather than
+// burning the whole timeout.
+bool tryConnect(const String &ssid, const String &pass, unsigned long timeoutMs) {
+  Serial.printf("wifi: connecting to \"%s\"...\n", ssid.c_str());
+  WiFi.begin(ssid.c_str(), pass.c_str());
+  unsigned long t0 = millis();
+  while (millis() - t0 < timeoutMs) {
+    if (WiFi.status() == WL_CONNECTED) {
+      Serial.printf("wifi: connected, IP %s\n", WiFi.localIP().toString().c_str());
+      return true;
+    }
+    delay(150);
+  }
+  Serial.printf("wifi: failed after %lums (status %d)\n", millis() - t0, WiFi.status());
+  return false;
+}
+
+// Rebuild the cached <option> list. Sorted by signal, strongest first, duplicates kept
+// out so a mesh with several radios does not fill the dropdown with one name.
+void refreshScan() {
+  Serial.println("wifi: scanning...");
+  int n = WiFi.scanNetworks();
+  scanCache = "";
+  for (int i = 0; i < n; i++) {
+    String ss = WiFi.SSID(i);
+    if (ss.length() == 0) continue;
+    if (scanCache.indexOf(">" + ss + "<") >= 0) continue;   // already listed
+    scanCache += "<option value=\"" + ss + "\">" + ss +
+                 "  (" + String(WiFi.RSSI(i)) + " dBm" +
+                 (WiFi.encryptionType(i) == WIFI_AUTH_OPEN ? ", open" : "") + ")</option>";
+  }
+  Serial.printf("wifi: %d network(s) found (mode=%d)\n", n, (int)WiFi.getMode());
+  for (int i = 0; i < n && i < 20; i++)
+    Serial.printf("   %2d. %-32s %4d dBm ch%d\n", i + 1, WiFi.SSID(i).c_str(),
+                  WiFi.RSSI(i), WiFi.channel(i));
+  WiFi.scanDelete();
+}
+
+bool ssidVisible(const String &ssid) {
+  int n = WiFi.scanNetworks();
+  bool found = false;
+  for (int i = 0; i < n; i++) if (WiFi.SSID(i) == ssid) { found = true; break; }
+  WiFi.scanDelete();
+  return found;
+}
+
+// --- TFT: what the setup screen shows -------------------------------------------------
+void drawPortalScreen(const String &status) {
+  tft.fillScreen(TFT_BLACK);
+  tft.setTextDatum(TC_DATUM);
+  tft.setTextColor(TFT_CYAN, TFT_BLACK);
+  tft.setFreeFont(&FreeSansBold12pt7b);
+  tft.drawString("WiFi Setup", 160, 8);
+  tft.setTextFont(2);
+
+  tft.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+  tft.drawString("1. Join this WiFi network:", 160, 44, 2);
+  tft.setTextColor(TFT_YELLOW, TFT_BLACK);
+  tft.setFreeFont(&FreeSansBold12pt7b);
+  tft.drawString(apName, 160, 62);
+  tft.setTextFont(2);
+  tft.setTextColor(TFT_DARKGREY, TFT_BLACK);
+  tft.drawString(AP_PASSWORD ? "(password required)" : "(no password)", 160, 90, 2);
+
+  tft.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+  tft.drawString("2. Open this address:", 160, 112, 2);
+  tft.setTextColor(TFT_GREEN, TFT_BLACK);
+  tft.setFreeFont(&FreeSansBold12pt7b);
+  tft.drawString("http://" + WiFi.softAPIP().toString(), 160, 130);
+  tft.setTextFont(2);
+
+  tft.setTextColor(TFT_DARKGREY, TFT_BLACK);
+  tft.drawString("Most phones open it automatically.", 160, 160, 2);
+
+  tft.fillRect(0, 186, 320, 36, TFT_BLACK);
+  if (status.length()) {
+    tft.setTextColor(status.startsWith("FAILED") ? TFT_ORANGE : TFT_WHITE, TFT_BLACK);
+    tft.drawString(status, 160, 192, 2);
+  }
+}
+
+// --- portal HTTP ----------------------------------------------------------------------
+String portalPage() {
+  String h = F("<!doctype html><meta name=viewport content='width=device-width,initial-scale=1'>"
+               "<title>CYD Weather Setup</title><style>"
+               "body{font-family:system-ui,sans-serif;background:#14140e;color:#f3f0e3;margin:0;padding:24px;}"
+               "h1{font-size:20px;margin:0 0 4px;} p{color:#ada895;font-size:14px;margin:0 0 20px;}"
+               "label{display:block;font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:#ada895;margin:16px 0 6px;}"
+               "select,input{width:100%;padding:12px;font-size:16px;background:#1c1c14;color:#f3f0e3;"
+               "border:1px solid #4a4834;border-radius:4px;box-sizing:border-box;}"
+               "button{width:100%;margin-top:20px;padding:14px;font-size:16px;font-weight:600;"
+               "background:#e8b93f;color:#14140e;border:0;border-radius:4px;}"
+               "a{color:#e8b93f;font-size:14px;display:inline-block;margin-top:16px;}"
+               ".s{margin:16px 0;padding:12px;border-left:3px solid #e8b93f;background:#2c2718;font-size:14px;}"
+               "</style><h1>CYD Weather Station</h1><p>Choose your WiFi network.</p>");
+  if (portalStatus.length()) h += "<div class=s>" + portalStatus + "</div>";
+  h += F("<form method=POST action=/save><label>Network</label><select name=ssid>");
+  h += scanCache.length() ? scanCache : String(F("<option value=''>-- no networks found --</option>"));
+  h += F("</select><label>Password</label>"
+         "<input name=pass type=password placeholder='Leave blank if open' autocomplete=off>"
+         "<button type=submit>Connect</button></form>"
+         "<a href=/rescan>Rescan networks</a>");
+  return h;
+}
+
+void handleRoot()   { portalServer.send(200, "text/html", portalPage()); }
+
+void handleRescan() {
+  refreshScan();
+  portalServer.sendHeader("Location", "/");
+  portalServer.send(302, "text/plain", "");
+}
+
+// Do NOT test the connection inside the handler: associating drops the AP client mid
+// response and the browser shows an error instead of the "testing" page. Hand it to the
+// portal loop and answer immediately.
+void handleSave() {
+  testSsid = portalServer.arg("ssid");
+  testPass = portalServer.arg("pass");
+  if (testSsid.length() == 0) {
+    portalStatus = "Pick a network first.";
+    handleRoot();
+    return;
+  }
+  portalServer.send(200, "text/html",
+    "<!doctype html><meta name=viewport content='width=device-width,initial-scale=1'>"
+    "<style>body{font-family:system-ui,sans-serif;background:#14140e;color:#f3f0e3;padding:24px;}"
+    "a{color:#e8b93f;}</style><h2>Testing \"" + testSsid + "\"...</h2>"
+    "<p>Watch the display. If it works the device restarts into the weather screen and "
+    "this network disappears. If it fails, rejoin and <a href=/>try again</a>.</p>");
+  testRequested = true;
+}
+
+// Blocks until the device is associated. Returns with WiFi in STA mode.
+void runProvisioningPortal(const String &reason) {
+  uint8_t mac[6];
+  WiFi.macAddress(mac);
+  char nm[32];
+  snprintf(nm, sizeof(nm), "CYD-Setup-%02X%02X", mac[4], mac[5]);
+  apName = nm;
+
+  // Scan FIRST, while still a plain station. In AP_STA the radio time-shares between
+  // hosting the AP and scanning, and a just-raised AP starves the scan badly -- doing it
+  // afterwards returned 1 network where the room actually had 17.
+  WiFi.mode(WIFI_STA);
+  WiFi.disconnect(false, false);
+  delay(100);
+  refreshScan();
+
+  WiFi.mode(WIFI_AP_STA);         // AP serves the portal, STA test-connects
+  if (AP_PASSWORD) WiFi.softAP(apName.c_str(), AP_PASSWORD);
+  else             WiFi.softAP(apName.c_str());
+  delay(500);                     // let the AP settle before anything else touches the radio
+
+  Serial.printf("wifi: provisioning portal up. reason: %s\n", reason.c_str());
+  Serial.printf("wifi: AP \"%s\" ch%d, open http://%s\n",
+                apName.c_str(), WiFi.channel(), WiFi.softAPIP().toString().c_str());
+  portalStatus = reason;
+  drawPortalScreen(reason);
+
+  portalDns.start(53, "*", WiFi.softAPIP());    // captive portal: any host -> our page
+  portalServer.on("/", handleRoot);
+  portalServer.on("/rescan", handleRescan);
+  portalServer.on("/save", HTTP_POST, handleSave);
+  portalServer.onNotFound(handleRoot);
+  portalServer.begin();
+
+  unsigned long lastStoredRetry = millis();
+
+  while (true) {
+    portalDns.processNextRequest();
+    portalServer.handleClient();
+
+    if (testRequested) {
+      testRequested = false;
+      drawPortalScreen("Testing " + testSsid + "...");
+      if (tryConnect(testSsid, testPass, STA_CONNECT_TIMEOUT_MS)) {
+        saveWifiCreds(testSsid, testPass);
+        staSsid = testSsid; staPass = testPass;
+        drawPortalScreen("Connected! Starting...");
+        delay(1500);
+        break;
+      }
+      portalStatus = "FAILED to connect to \"" + testSsid + "\". Wrong password, or out of range.";
+      drawPortalScreen("FAILED: " + testSsid);
+      refreshScan();
+    }
+
+    // The stored network may simply have been rebooting. Recover without a human.
+    if (staSsid.length() && millis() - lastStoredRetry > PORTAL_RETRY_STORED_MS) {
+      lastStoredRetry = millis();
+      if (ssidVisible(staSsid)) {
+        Serial.printf("wifi: stored network \"%s\" is back, retrying\n", staSsid.c_str());
+        drawPortalScreen("Retrying " + staSsid + "...");
+        if (tryConnect(staSsid, staPass, STA_CONNECT_TIMEOUT_MS)) {
+          drawPortalScreen("Reconnected! Starting...");
+          delay(1500);
+          break;
+        }
+        drawPortalScreen(portalStatus);
+      }
+    }
+    delay(5);
+  }
+
+  portalServer.stop();
+  portalDns.stop();
+  WiFi.softAPdisconnect(true);
+  WiFi.mode(WIFI_STA);            // the STA association established above survives this
+  Serial.println("wifi: portal closed, running as station");
+}
+
+// Full startup path. Returns true once associated; only ever returns false if there is
+// nothing to do, which cannot happen because the portal blocks until it succeeds.
+bool wifiStartup() {
+  WiFi.mode(WIFI_STA);
+  if (!loadWifiCreds()) {
+    runProvisioningPortal("No network configured yet.");
+    return true;
+  }
+  if (tryConnect(staSsid, staPass, STA_CONNECT_TIMEOUT_MS)) return true;
+
+  // Distinguish "not here" from "wrong password" -- the user asked for exactly this.
+  String why = ssidVisible(staSsid)
+      ? "Could not join \"" + staSsid + "\". Password may have changed."
+      : "Previous network \"" + staSsid + "\" not found.";
+  Serial.printf("wifi: %s\n", why.c_str());
+  runProvisioningPortal(why);
+  return true;
+}
+
 void drawConnectingScreen() {
   tft.fillScreen(TFT_BLACK);
   tft.setTextColor(TFT_CYAN);
@@ -1111,7 +1405,7 @@ void drawConnectingScreen() {
   tft.setTextColor(TFT_WHITE);
   tft.drawString("Connecting to WiFi...", 160, 120, 2);
   tft.setTextColor(TFT_YELLOW);
-  tft.drawString(WIFI_SSID, 160, 145, 2);
+  tft.drawString(staSsid.length() ? staSsid : String("(not configured)"), 160, 145, 2);
 }
 
 void setup() {
@@ -1149,43 +1443,27 @@ void setup() {
 
   drawConnectingScreen();
   
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(WIFI_SSID, WIFI_PASS);
-  
-  int dots = 0;
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
-    dots++;
-    if (dots % 4 == 0) Serial.println();
-    tft.setTextColor(TFT_WHITE, TFT_BLACK);
-    tft.setTextDatum(TC_DATUM);
-    String dotStr = "";
-    for (int i = 0; i < (dots % 4); i++) dotStr += ". ";
-    tft.drawString(dotStr, 160, 175, 4);
-    if (dots > 60) {
-      tft.setTextColor(TFT_RED);
-      tft.drawString("WiFi FAILED!", 160, 210, 2);
-      break;
-    }
-  }
-  
-  if (WiFi.status() == WL_CONNECTED) {
-    wifiConnected = true;
-    Serial.println("\nWiFi connected! IP: " + WiFi.localIP().toString());
-    
-    // Configure NTP for local time
-    configTime(0, 0, "pool.ntp.org", "time.nist.gov");
-    // Set timezone to America/New_York (covers Kentucky area)
-    setTimezone(HOME_TZ);
-    
-    tft.setTextColor(TFT_GREEN, TFT_BLACK);
-    tft.setTextDatum(TC_DATUM);
-    tft.drawString("WiFi Connected!", 160, 210, 2);
-    tft.setTextColor(TFT_WHITE);
-    tft.drawString(WiFi.localIP().toString(), 160, 225, 2);
-  }
-  
+  // Credentials come from NVS, and if there are none -- or the stored network cannot be
+  // joined -- wifiStartup() raises the setup AP and blocks until the device is online.
+  // It therefore always returns associated.
+  wifiStartup();
+  wifiConnected = true;
+  Serial.printf("WiFi connected! IP: %s\n", WiFi.localIP().toString().c_str());
+
+  configTime(0, 0, "pool.ntp.org", "time.nist.gov");
+  setTimezone(HOME_TZ);
+
+  tft.fillScreen(TFT_BLACK);
+  tft.setTextColor(TFT_CYAN, TFT_BLACK);
+  tft.setTextDatum(MC_DATUM);
+  tft.drawString("CYD Weather Station", 160, 80, 4);
+  tft.setTextColor(TFT_GREEN, TFT_BLACK);
+  tft.drawString("WiFi Connected!", 160, 130, 2);
+  tft.setTextColor(TFT_YELLOW, TFT_BLACK);
+  tft.drawString(staSsid, 160, 152, 2);
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  tft.drawString(WiFi.localIP().toString(), 160, 172, 2);
+
   delay(2000);
 
   // One-time clean slate: drawWeatherScreen() no longer blanks the whole panel on
