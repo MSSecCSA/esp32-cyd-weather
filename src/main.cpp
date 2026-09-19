@@ -917,9 +917,32 @@ void drawClockScreen() {
 }
 
 // Single dispatch point so gesture and timer code never has to know which view is up.
+// Three redraw entry points, and picking the wrong one is how the clock view ended up
+// with the full weather screen painted across it. Use:
+//   drawCurrentView()      - the whole panel needs repainting (view switch, overlay
+//                            dismissed, first draw)
+//   redrawWeatherContent() - the weather DATA changed (new city, fresh fetch)
+//   redrawWifiIndicator()  - only the connection dot changed
+// Never call drawWeatherScreen() or drawWifiStatusDot() directly from loop() or the
+// gesture handler: both draw at the weather view's coordinates unconditionally, so in
+// the clock view they land on top of whatever is already there.
 void drawCurrentView() {
   if (currentView == VIEW_CLOCK) drawClockScreen();
   else                           drawWeatherScreen();
+}
+
+// Only the strip carries weather in the clock view. Repainting the big clock here too
+// would make the time visibly blink on every city change -- every 10s with auto-rotate.
+void redrawWeatherContent() {
+  if (currentView == VIEW_CLOCK) drawClockWeatherStrip(tft);
+  else                           drawWeatherScreen();
+}
+
+// The status dot sits at different coordinates in each layout, so repaint whichever
+// element actually owns it.
+void redrawWifiIndicator() {
+  if (currentView == VIEW_CLOCK) drawClockWeatherStrip(tft);
+  else                           drawWifiStatusDot(tft);
 }
 
 // === Diagnostics overlay (double-tap to open, any tap to dismiss) ===
@@ -1131,7 +1154,9 @@ void loop() {
       } else {
         autoRotatePaused = !autoRotatePaused;
         lastCitySwitch = millis(); // don't let a stale window instantly resume-then-switch
-        drawCurrentView();
+        // Only the Paused/Auto label changed, and that lives in the weather content of
+        // both layouts -- no need to repaint the big clock and make it blink.
+        redrawWeatherContent();
         Serial.println(autoRotatePaused ? "Long-press -> auto-rotate paused" : "Long-press -> auto-rotate resumed");
       }
     }
@@ -1168,7 +1193,7 @@ void loop() {
         lastWeatherUpdate = millis();
         lastCitySwitch = millis();
         lastClockTick = millis();
-        drawCurrentView();
+        redrawWeatherContent();
         Serial.printf("Swipe -> switched to: %s\n", cities[currentCityIndex].name);
       } else if (abs(dy) > SWIPE_MIN_DELTA && abs(dy) > abs(dx) * 2) {
         // Vertical swipe = toggle view. Mutually exclusive with the horizontal test
@@ -1195,7 +1220,7 @@ void loop() {
         lastWeatherUpdate = millis();
         lastCitySwitch = millis();
         lastClockTick = millis();
-        drawCurrentView();
+        redrawWeatherContent();
         Serial.printf("Tap -> switched to: %s\n", cities[currentCityIndex].name);
       }
     }
@@ -1208,7 +1233,7 @@ void loop() {
     bool nowConnected = (WiFi.status() == WL_CONNECTED);
     if (nowConnected != wifiConnected) {
       wifiConnected = nowConnected;
-      if (!showingDiagnostics) drawWifiStatusDot(tft);
+      if (!showingDiagnostics) redrawWifiIndicator();
       Serial.println(wifiConnected ? "WiFi reconnected" : "WiFi dropped");
     }
     if (!nowConnected) {
@@ -1246,7 +1271,7 @@ void loop() {
     lastWeatherUpdate = millis();
     lastCitySwitch = millis();
     lastClockTick = millis();
-    drawWeatherScreen();
+    redrawWeatherContent();
     Serial.printf("Auto-switch -> %s\n", cities[currentCityIndex].name);
   }
   
