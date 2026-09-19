@@ -164,6 +164,24 @@ at init (`TFT_eSPI.cpp:543-546`) — a second driver claiming GPIO 33. Don't re-
 
 - **Hardware:** ILI9341 320x240 TFT over SPI, plus an XPT2046 resistive touch controller on its own CS/IRQ pins (`TOUCH_CS`/`TOUCH_IRQ`, defined near the top of `main.cpp`; touch SPI speed is set separately via `SPI_TOUCH_FREQUENCY`). See the CYD hardware section above for board-level detail.
 
+- **Two full-screen views, and three redraw entry points. Getting these wrong is the most common bug in this file.** `VIEW_WEATHER` is the detailed layout; `VIEW_CLOCK` is a roughly 70/30 split with a large home clock over a condensed weather strip, reached by a **vertical swipe**. The two layouts share no zones, so switching does a single `fillScreen()` — the per-zone erase discipline used inside each layout cannot clean up after the other one.
+
+  Never call `drawWeatherScreen()` or `drawWifiStatusDot()` directly from `loop()` or the gesture handler: both draw at the weather layout's coordinates unconditionally, so in the clock view they land on top of whatever is already there. Use the dispatcher that matches the granularity you need:
+
+  | Call | Use when |
+  |---|---|
+  | `drawCurrentView()` | The whole panel needs repainting — view switch, overlay dismissed, first draw |
+  | `redrawWeatherContent()` | The weather *data* changed — new city, fresh fetch, pause toggled |
+  | `redrawWifiIndicator()` | Only the connection dot changed |
+
+  **This has bitten twice, both times from editing by pattern-match instead of enumerating call sites.** Once a blanket replace matched the dispatcher's own `else` branch and produced `drawCurrentView()` calling itself — which hung *silently* rather than crashing, because a tail call at `-O2` becomes an unconditional jump, so there was no stack overflow and no panic. The second time the same replace *missed* the auto-switch call site (indented 4 spaces where the pattern expected 2, 6 or 8), so the full weather layout repainted over the clock view every 10 seconds. If you change redraw routing, `grep` every call site and convert them individually.
+
+  `redrawWeatherContent()` exists specifically so a city change doesn't repaint the big clock — doing so makes the time visibly blink every 10 seconds under auto-rotate.
+
+- **Font 8 is the only face large enough for the clock view, and it has no letters.** `LOAD_FONT8` gives a 75px face containing **only `1234567890:-.`** — so the AM/PM tag is drawn separately in font 4 beside the digits, not concatenated into the time string. `logLayoutMetrics()` measures it at boot: `"07:42"` renders 249px of the 320px width.
+
+- **`logLayoutMetrics()` measures real rendered text widths at boot** rather than trusting estimates, and logs `*** COLLIDES ***` / `*** OVERFLOWS ***` if anything stops fitting its zone. Added after three layout faults shipped at once (a clipped header, a clock box over the city name, and stale text left by centred strings that got shorter). Adding a city with a long name or a wordier condition string now reports itself on serial instead of appearing as a smear on the panel.
+
 - **Global-state redraw model, with one exception.** A handful of globals (`weatherTemp`, `weatherDesc`, `weatherHumidity`, `weatherWind`, `weatherCodeInt`, `wifiConnected`, `currentCityIndex`, ...) hold the latest fetched values, and most updates trigger a full `drawWeatherScreen()` repaint. The exception is the clock: `drawHomeClock()`/`drawCityClock()` are factored out so `loop()` can refresh just those small text regions once a second (`CLOCK_TICK_INTERVAL`) via a direct `fillRect`-then-`drawString` on `tft`, without paying for a full sprite-buffered redraw. Before this, the on-screen clocks only updated on the 10s city-switch cadence and visibly froze in between.
 
 - **City rotation drives both data and UI.** The `cities[]` array (`{lat, lon, name, tz}`, `tz` a POSIX TZ string) is the single source of truth for which city's weather is fetched and which local time is shown. `NUM_CITIES` is derived via `sizeof(cities)/sizeof(cities[0])`, so adding/removing a city is a one-line change to the array. Advancing city happens three ways, all converging on the same fetch+redraw path — see Gestures below.
@@ -201,7 +219,16 @@ With raw pinned at 0, `lightFrac` was permanently 0 and the backlight sat at `BA
 | Gesture | Effect |
 |---|---|
 | Tap | Next city |
-| Horizontal swipe | Previous city (threshold now 45 **screen px**, not raw ADC counts) |
+| Horizontal swipe | Previous city (threshold 45 **screen px**, not raw ADC counts) |
+| **Vertical swipe** | **Toggle between the weather view and the 70/30 clock view.** Mutually exclusive with the horizontal test — each axis must dominate the other by 2×, so a sloppy diagonal falls through and is treated as a tap |
 | Long-press (~700ms, low drift) | Toggle auto-rotate pause/resume ("Paused" replaces "Auto 10s" in the info bar) |
 | Double-tap (2nd tap within 400ms) | Open the diagnostics overlay (first tap still advances the city as normal; the 2nd tap's advance is replaced) |
-| Any tap/swipe/long-press while diagnostics is open | Dismiss back to the weather screen |
+| Any tap/swipe/long-press while diagnostics is open | Dismiss back to whichever view was active |
+
+Every touch release logs one diagnostic line — held time and per-axis travel — because a gesture that fails to classify is otherwise completely silent:
+
+```
+touch release: held=180ms dx=3 dy=62 (swipe needs |d|>45 and 2x the other axis; tap window 50-700ms)
+```
+
+That distinguishes the three ways a swipe can fail to register: held too long (past the 700ms long-press threshold), travelled too little (under 45px), or not detected at all.
