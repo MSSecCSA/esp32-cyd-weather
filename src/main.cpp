@@ -54,6 +54,17 @@ const int DESC_Y  = 103, DESC_H  = 26;  // 103..128 condition text
 const int CITY_Y  = 130, CITY_H  = 16;  // 130..145 city name
 const int CTIME_Y = 147, CTIME_H = 16;  // 147..162 city local time (was 140, overlapping)
 
+// --- Alternate "clock" view: roughly 70% clock / 30% weather ---
+// The split lands at y=168 (70% of 240). Font 8 is the 75px face and carries ONLY
+// "1234567890:-." -- no letters -- so the AM/PM tag is drawn beside it in font 4
+// rather than being part of the time string.
+const int CLK_TIME_Y  = 30,  CLK_TIME_H = 84;   // 30..113   big HH:MM
+const int CLK_DATE_Y  = 120, CLK_DATE_H = 28;   // 120..147  weekday + date
+const int CLK_SEP_Y   = 160;                    // hairline between the halves
+const int STRIP_X = 5, STRIP_Y = 170, STRIP_W = 310, STRIP_H = 58;  // 170..227
+const int STRIP_ICON_CX = 44, STRIP_ICON_CY = 199, STRIP_ICON_SCALE = 15;
+const int STRIP_TEXT_X = 86;  // 147..162 city local time (was 140, overlapping)
+
 // === Backlight (PWM via LEDC on TFT_BL, see build_flags) ===
 const int BACKLIGHT_CHANNEL = 0;
 const int BACKLIGHT_FREQ = 5000;      // Hz — must be >=1kHz to avoid visible/flicker-sensor issues
@@ -238,6 +249,12 @@ const unsigned long WIFI_CHECK_INTERVAL = 5000;   // 5 sec
 const unsigned long CLOCK_TICK_INTERVAL = 1000;   // 1 sec
 bool autoRotatePaused = false;
 bool showingDiagnostics = false;
+
+// Two full-screen layouts. They share no zones, so switching between them does a single
+// full fillScreen -- the per-zone erase discipline used within each layout cannot clean
+// up after the other one.
+enum ViewMode : uint8_t { VIEW_WEATHER = 0, VIEW_CLOCK = 1 };
+ViewMode currentView = VIEW_WEATHER;
 
 // --- Touch gesture tuning (raw XPT2046 units, 0-4095 range) ---
 const unsigned long LONG_PRESS_MS = 700;   // hold this long, without drifting, to toggle pause
@@ -733,6 +750,13 @@ void logLayoutMetrics() {
   Serial.printf("  header clock sample: %d wide, box is %d  %s\n",
                 hw, HDR_CLOCK_W, hw <= HDR_CLOCK_W ? "OK" : "*** OVERFLOWS ***");
   Serial.println("  bands: temp 44-102  desc 103-128  city 130-145  ctime 147-162");
+
+  int bigW = tft.textWidth("07:42", 8);
+  int dateW = tft.textWidth("Wednesday, Sep 18", 4);
+  Serial.printf("  clock view: big time \"07:42\" %d wide (screen 320)  %s\n",
+                bigW, bigW <= 300 ? "OK" : "*** TOO WIDE ***");
+  Serial.printf("  clock view: longest date \"Wednesday, Sep 18\" %d wide  %s\n",
+                dateW, dateW <= 316 ? "OK" : "*** TOO WIDE ***");
 }
 
 void drawWeatherScreen() {
@@ -810,7 +834,92 @@ void drawWeatherScreen() {
   // --- Footer (tight to bar) --- static text, never changes width, but opaque anyway
   d.setTextColor(TFT_GREEN, TFT_BLACK);
   d.setTextDatum(TC_DATUM);
-  d.drawString("Tap next | Swipe back | Hold pause", 160, 213, 1);
+  d.drawString("Tap next | Swipe up: clock | Hold: pause", 160, 213, 1);
+}
+
+// === Alternate view: big clock over a condensed weather strip ===
+// Roughly a 70/30 vertical split. The point of this view is glanceability from across a
+// room, so the time gets Font 8 (75px) and everything else is deliberately secondary.
+void drawBigClock(TFT_eSPI &d, bool eraseFirst) {
+  setTimezone(HOME_TZ);
+  struct tm ti;
+  char hhmm[8], ampm[6], datestr[28];
+  if (getLocalTime(&ti, 100)) {
+    strftime(hhmm,    sizeof(hhmm),    "%I:%M", &ti);
+    strftime(ampm,    sizeof(ampm),    "%p", &ti);
+    strftime(datestr, sizeof(datestr), "%A, %b %d", &ti);
+  } else {
+    strlcpy(hhmm, "--:--", sizeof(hhmm));
+    ampm[0] = '\0';
+    strlcpy(datestr, "no time sync yet", sizeof(datestr));
+  }
+
+  if (eraseFirst) {
+    d.fillRect(0, CLK_TIME_Y, 320, CLK_TIME_H, TFT_BLACK);
+    d.fillRect(0, CLK_DATE_Y, 320, CLK_DATE_H, TFT_BLACK);
+  }
+
+  // Nudged left of centre so the AM/PM tag sits beside the digits without pushing the
+  // whole block off-centre. Font 8 has no letters, hence the separate draw.
+  int tw = d.textWidth(hhmm, 8);
+  int cx = 160 - 14;
+  d.setTextColor(TFT_WHITE, TFT_BLACK);
+  d.setTextDatum(TC_DATUM);
+  d.drawString(hhmm, cx, CLK_TIME_Y, 8);
+
+  if (ampm[0]) {
+    d.setTextColor(TFT_DARKCYAN, TFT_BLACK);
+    d.setTextDatum(BL_DATUM);
+    d.drawString(ampm, cx + tw / 2 + 10, CLK_TIME_Y + CLK_TIME_H - 12, 4);
+  }
+
+  d.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+  d.setTextDatum(TC_DATUM);
+  d.drawString(datestr, 160, CLK_DATE_Y, 4);
+}
+
+// The strip repaints its whole rounded rect every time, so unlike the main view there is
+// no per-zone erase to get wrong and no way for a previous city's text to survive.
+void drawClockWeatherStrip(TFT_eSPI &d) {
+  const uint16_t bg = d.color565(18, 18, 26);
+  d.fillRoundRect(STRIP_X, STRIP_Y, STRIP_W, STRIP_H, 5, bg);
+
+  drawWeatherIcon(d, STRIP_ICON_CX, STRIP_ICON_CY, STRIP_ICON_SCALE,
+                  weatherCodeInt, isCurrentCityNight());
+
+  d.setTextDatum(ML_DATUM);
+  d.setTextColor(TFT_WHITE, bg);
+  d.setFreeFont(&FreeSansBold12pt7b);
+  d.drawString(weatherTemp, STRIP_TEXT_X, STRIP_Y + 18);
+  d.setTextFont(2);   // GFXFF reset, see CLAUDE.md
+
+  d.setTextColor(weatherDataValid ? TFT_CYAN : TFT_ORANGE, bg);
+  d.drawString(weatherDesc, STRIP_TEXT_X + 72, STRIP_Y + 18, 2);
+
+  d.setTextColor(TFT_LIGHTGREY, bg);
+  d.drawString(cities[currentCityIndex].name, STRIP_TEXT_X, STRIP_Y + 42, 2);
+
+  d.setTextDatum(MR_DATUM);
+  d.setTextColor(autoRotatePaused ? TFT_ORANGE : TFT_YELLOW, bg);
+  d.drawString(autoRotatePaused ? "Paused" : "Auto 10s", STRIP_X + STRIP_W - 26, STRIP_Y + 42, 2);
+
+  d.fillCircle(STRIP_X + STRIP_W - 13, STRIP_Y + 42, 4, wifiConnected ? TFT_GREEN : TFT_RED);
+}
+
+void drawClockScreen() {
+  TFT_eSPI &d = tft;
+  drawBigClock(d, true);
+  d.drawFastHLine(24, CLK_SEP_Y, 272, TFT_DARKGREY);
+  drawClockWeatherStrip(d);
+  d.setTextColor(TFT_DARKGREY, TFT_BLACK);
+  d.setTextDatum(TC_DATUM);
+  d.drawString("Swipe up/down for full weather", 160, 230, 1);
+}
+
+// Single dispatch point so gesture and timer code never has to know which view is up.
+void drawCurrentView() {
+  if (currentView == VIEW_CLOCK) drawClockScreen();
+  else                           drawWeatherScreen();
 }
 
 // === Diagnostics overlay (double-tap to open, any tap to dismiss) ===
@@ -968,7 +1077,7 @@ void setup() {
   lastWeatherUpdate = millis();
   lastCitySwitch = millis();
   lastClockTick = millis();
-  drawWeatherScreen();
+  drawCurrentView();
 }
 
 void loop() {
@@ -1017,12 +1126,12 @@ void loop() {
       if (showingDiagnostics) {
         showingDiagnostics = false;
         lastClockTick = millis();
-        drawWeatherScreen();
+        drawCurrentView();
         Serial.println("Long-press -> dismissed diagnostics overlay");
       } else {
         autoRotatePaused = !autoRotatePaused;
         lastCitySwitch = millis(); // don't let a stale window instantly resume-then-switch
-        drawWeatherScreen();
+        drawCurrentView();
         Serial.println(autoRotatePaused ? "Long-press -> auto-rotate paused" : "Long-press -> auto-rotate resumed");
       }
     }
@@ -1035,12 +1144,19 @@ void loop() {
     int dx = lastTouchX - touchStartX;
     int dy = lastTouchY - touchStartY;
 
+    // Touch is the flakiest subsystem on this board, and a gesture that fails to
+    // classify is otherwise completely silent. One line per release is cheap and makes
+    // "nothing happened" diagnosable: it shows whether the press was seen at all, how
+    // long it was held, and how far it travelled in each axis.
+    Serial.printf("touch release: held=%lums dx=%d dy=%d (swipe needs |d|>%d and 2x the other axis; tap window %lu-%lums)\n",
+                  heldFor, dx, dy, SWIPE_MIN_DELTA, 50UL, LONG_PRESS_MS);
+
     if (!longPressFired && heldFor > 50 && heldFor < LONG_PRESS_MS) {
       if (showingDiagnostics) {
         // Any tap/swipe dismisses the overlay back to the weather screen.
         showingDiagnostics = false;
         lastClockTick = releaseTime;
-        drawWeatherScreen();
+        drawCurrentView();
         Serial.println("Dismissed diagnostics overlay");
       } else if (abs(dx) > SWIPE_MIN_DELTA && abs(dx) > abs(dy) * 2) {
         // Horizontal swipe = previous city. Sign follows the same raw-coordinate
@@ -1052,8 +1168,18 @@ void loop() {
         lastWeatherUpdate = millis();
         lastCitySwitch = millis();
         lastClockTick = millis();
-        drawWeatherScreen();
+        drawCurrentView();
         Serial.printf("Swipe -> switched to: %s\n", cities[currentCityIndex].name);
+      } else if (abs(dy) > SWIPE_MIN_DELTA && abs(dy) > abs(dx) * 2) {
+        // Vertical swipe = toggle view. Mutually exclusive with the horizontal test
+        // above: each requires its axis to dominate the other by 2x, so a sloppy
+        // diagonal simply falls through and is treated as a tap.
+        currentView = (currentView == VIEW_WEATHER) ? VIEW_CLOCK : VIEW_WEATHER;
+        tft.fillScreen(TFT_BLACK);   // the layouts share no zones; wipe once on switch
+        lastClockTick = millis();
+        drawCurrentView();
+        Serial.printf("Swipe %s -> %s view\n", dy > 0 ? "down" : "up",
+                      currentView == VIEW_CLOCK ? "CLOCK" : "WEATHER");
       } else if (releaseTime - lastTapTime < DOUBLE_TAP_WINDOW_MS) {
         // Double-tap = diagnostics overlay (the first tap already advanced
         // the city as a normal single tap; this just replaces the 2nd advance).
@@ -1069,7 +1195,7 @@ void loop() {
         lastWeatherUpdate = millis();
         lastCitySwitch = millis();
         lastClockTick = millis();
-        drawWeatherScreen();
+        drawCurrentView();
         Serial.printf("Tap -> switched to: %s\n", cities[currentCityIndex].name);
       }
     }
@@ -1105,8 +1231,12 @@ void loop() {
   // --- Per-second clock tick (small direct redraw, no full-screen sprite) ---
   if (!showingDiagnostics && millis() - lastClockTick > CLOCK_TICK_INTERVAL) {
     lastClockTick = millis();
-    drawHomeClock(tft, true);
-    drawCityClock(tft, true);
+    if (currentView == VIEW_CLOCK) {
+      drawBigClock(tft, true);
+    } else {
+      drawHomeClock(tft, true);
+      drawCityClock(tft, true);
+    }
   }
 
   // --- Auto-switch city every 10 seconds (unless paused or viewing diagnostics) ---
