@@ -126,6 +126,7 @@ struct City {
   const char* tz;  // POSIX timezone string for local time
 };
 
+// === CITIES:BEGIN — rewritten by tools/set_cities.py; hand-editing is fine too ===
 // Edit this list to taste -- it is the single source of truth for which cities are
 // fetched and which local times are shown. `tz` is a POSIX TZ string, NOT an IANA name
 // ("America/New_York" will not work here); every one must be <= TZ_PADDED_LEN characters,
@@ -139,6 +140,7 @@ City cities[] = {
   {35.6762,  139.6503, "Tokyo, Japan",     "JST-9"},
   {-33.8688, 151.2093, "Sydney, AU",       "AEST-10AEDT,M10.1.0,M4.1.0/3"}
 };
+// === CITIES:END ===
 const int NUM_CITIES = sizeof(cities) / sizeof(cities[0]);
 int currentCityIndex = 0;
 

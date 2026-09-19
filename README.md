@@ -96,7 +96,42 @@ survive reflashing, and there is nothing in the binary to leak.
 
 ### Choose your own cities
 
-Edit `cities[]` near the top of `src/main.cpp`, and set `HOME_TZ` to your own zone:
+Easiest way — an interactive script that does the lookups for you and then flashes:
+
+```sh
+python3 tools/set_cities.py
+```
+
+```
+  City, US ZIP, or 'City, Country'  (blank when finished): 28202
+    looking up ZIP 28202...
+    -> Charlotte, North Carolina, US
+    checking weather availability...
+    ok: 77F right now, timezone America/New_York
+    tz: EST5EDT,M3.2.0,M11.1.0  (22/31 chars)
+    display name [Charlotte, NC]:
+    added: Charlotte, NC   (1 so far)
+```
+
+It accepts a **city name**, a **US ZIP**, or **"City, Country"**; disambiguates when there
+are several matches (there are eight places called Tokyo); asks for a nearby major city if
+nothing is found; confirms Open-Meteo actually serves each point before accepting it;
+checks the name fits the display column and the TZ string fits the firmware's limit; then
+rewrites `cities[]` and offers to upload. Your previous list is saved as `main.cpp.bak`.
+
+Stdlib only — nothing to install. Flags: `--port` to pick the serial port, `--no-flash` to
+write the file without uploading.
+
+**Why a script rather than "just edit the array":** the firmware needs a **POSIX** TZ string
+(`EST5EDT,M3.2.0,M11.1.0`), while every geocoder returns an **IANA** name
+(`America/New_York`). The script reads the POSIX rule out of your own system's TZif files —
+each one ends with it as its last line — so the result matches what the C library would use,
+with no mapping table to drift out of date. Getting a DST rule subtly wrong produces a
+plausible-looking but incorrect clock, which is exactly the kind of bug that survives a long
+time unnoticed.
+
+To edit by hand instead, the array is between the `CITIES:BEGIN` / `CITIES:END` markers in
+`src/main.cpp`, and `HOME_TZ` just above it sets your own local zone:
 
 ```cpp
 City cities[] = {
@@ -105,9 +140,8 @@ City cities[] = {
 };
 ```
 
-`tz` must be a **POSIX** TZ string, not an IANA name — `"America/New_York"` will not work.
-Keep it under 31 characters; `checkTimezoneLengths()` complains loudly at boot if not, and
-`logLayoutMetrics()` reports if a long city name will overflow its zone on screen.
+`checkTimezoneLengths()` and `logLayoutMetrics()` both report on the serial log at boot if a
+TZ string or a city name is too long.
 
 ## Testing your own board
 
